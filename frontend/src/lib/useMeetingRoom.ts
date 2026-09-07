@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getToken } from "./api";
 import { WS_URL } from "./config";
-import type { ChatMessage, PeerInfo, ServerEvent, TranscriptSegment } from "./types";
+import type { ChatMessage, PeerInfo, Poll, ServerEvent, Stroke, TranscriptSegment } from "./types";
 
 export interface RemotePeer extends PeerInfo {
   stream: MediaStream | null;
+  /** Bumped as tracks land so a tile re-renders when Safari adds audio late. */
+  streamRevision?: number;
 }
 
 export interface FloatingReaction {
@@ -58,6 +60,8 @@ export function useMeetingRoom({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [polls, setPolls] = useState<Poll[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const connectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -115,15 +119,26 @@ export function useMeetingRoom({
       };
 
       connection.ontrack = (event) => {
-        const [remoteStream] = event.streams;
-        if (!remoteStream) return;
+        // Safari fires ontrack with an empty `streams` list, one event per track,
+        // so a Chrome-shaped `event.streams[0]` read silently drops everything a
+        // Mac sends. Fall back to assembling the stream from the tracks instead.
+        let remoteStream = event.streams[0] as MediaStream | undefined;
+        if (!remoteStream) {
+          const assembled = pendingStreamsRef.current.get(connectionId) ?? new MediaStream();
+          if (!assembled.getTracks().some((track) => track.id === event.track.id)) {
+            assembled.addTrack(event.track);
+          }
+          remoteStream = assembled;
+        }
         // ontrack fires once per stream. If the roster has not caught up yet,
         // dropping it here would lose the peer's media for the whole call.
         pendingStreamsRef.current.set(connectionId, remoteStream);
+        const settled = remoteStream;
         setPeers((current) => {
           const peer = current[connectionId];
           if (!peer) return current;
-          return { ...current, [connectionId]: { ...peer, stream: remoteStream } };
+          // Same object identity on a second track would not re-render the tile.
+          return { ...current, [connectionId]: { ...peer, stream: settled, streamRevision: settled.getTracks().length } };
         });
       };
 
@@ -223,6 +238,8 @@ export function useMeetingRoom({
               ]),
             ),
           );
+          setStrokes(message.whiteboard ?? []);
+          setPolls(message.polls ?? []);
           break;
         }
         case "peer-joined": {
@@ -278,6 +295,21 @@ export function useMeetingRoom({
           ]);
           break;
         }
+        case "whiteboard": {
+          if (message.action === "clear") setStrokes([]);
+          else setStrokes((current) => [...current, message.stroke]);
+          break;
+        }
+        case "poll": {
+          setPolls((current) => {
+            const index = current.findIndex((p) => p.id === message.poll.id);
+            if (index === -1) return [...current, message.poll];
+            const next = [...current];
+            next[index] = message.poll;
+            return next;
+          });
+          break;
+        }
         case "reaction": {
           const id = Date.now() + Math.random();
           setReactions((current) => [...current, { id, emoji: message.emoji, displayName: message.displayName }]);
@@ -321,6 +353,8 @@ export function useMeetingRoom({
       pendingIce.clear();
       pendingStreams.clear();
       setPeers({});
+      setStrokes([]);
+      setPolls([]);
       setConnected(false);
     };
   }, [code, enabled, closeConnection, handleSignal, offerTo, send]);
@@ -342,6 +376,13 @@ export function useMeetingRoom({
       sendReaction: (emoji: string) => send({ type: "reaction", emoji }),
       sendTranscript: (text: string, startMs: number, endMs: number) =>
         send({ type: "transcript", text, startMs, endMs }),
+      sendStroke: (stroke: Stroke) => send({ type: "whiteboard", action: "stroke", stroke }),
+      clearBoard: () => send({ type: "whiteboard", action: "clear" }),
+      createPoll: (question: string, options: string[]) =>
+        send({ type: "poll", action: "create", question, options }),
+      votePoll: (pollId: string, choice: number) =>
+        send({ type: "poll", action: "vote", pollId, choice }),
+      closePoll: (pollId: string) => send({ type: "poll", action: "close", pollId }),
       replaceVideoTrack,
       seedMessages: (initial: ChatMessage[]) => setMessages(initial),
       seedSegments: (initial: TranscriptSegment[]) => setSegments(initial),
@@ -349,5 +390,5 @@ export function useMeetingRoom({
     [send, replaceVideoTrack],
   );
 
-  return { connected, self, peers: Object.values(peers), messages, segments, reactions, ...api };
+  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, ...api };
 }
