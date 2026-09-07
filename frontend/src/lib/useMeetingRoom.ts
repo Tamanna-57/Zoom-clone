@@ -25,8 +25,13 @@ interface Options {
   onRecordingChanged: (state: "started" | "ready", recordingId: number, by: string) => void;
   onForceMute: (by: string) => void;
   onRemoved: (participantId: number, by: string) => void;
+  /** The same account opened this meeting somewhere else and took the seat. */
+  onReplaced: () => void;
   selfParticipantId: number | null;
 }
+
+/** Close code the server uses when a newer socket for this account supersedes us. */
+const WS_REPLACED_ELSEWHERE = 4409;
 
 /**
  * One mesh call.
@@ -44,6 +49,7 @@ export function useMeetingRoom({
   onRecordingChanged,
   onForceMute,
   onRemoved,
+  onReplaced,
   selfParticipantId,
 }: Options) {
   const [connected, setConnected] = useState(false);
@@ -57,9 +63,12 @@ export function useMeetingRoom({
   const connectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const streamRef = useRef<MediaStream | null>(null);
+  // A track can arrive before the roster entry it belongs to. Park it here so a
+  // late peer record still gets its video instead of rendering a frozen avatar.
+  const pendingStreamsRef = useRef<Map<string, MediaStream>>(new Map());
 
   // Callbacks live in a ref so the socket effect never re-subscribes on rerender.
-  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, selfParticipantId });
+  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId });
   // Offering is defined after the connection factory that needs it.
   const offerRef = useRef<(connectionId: string) => Promise<void>>(async () => undefined);
 
@@ -68,8 +77,8 @@ export function useMeetingRoom({
   }, [localStream]);
 
   useEffect(() => {
-    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, selfParticipantId };
-  }, [onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, selfParticipantId]);
+    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId };
+  }, [onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId]);
 
   const send = useCallback((payload: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -81,6 +90,7 @@ export function useMeetingRoom({
     connection?.close();
     connectionsRef.current.delete(connectionId);
     pendingIceRef.current.delete(connectionId);
+    pendingStreamsRef.current.delete(connectionId);
   }, []);
 
   const createConnection = useCallback(
@@ -106,10 +116,14 @@ export function useMeetingRoom({
 
       connection.ontrack = (event) => {
         const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        // ontrack fires once per stream. If the roster has not caught up yet,
+        // dropping it here would lose the peer's media for the whole call.
+        pendingStreamsRef.current.set(connectionId, remoteStream);
         setPeers((current) => {
           const peer = current[connectionId];
           if (!peer) return current;
-          return { ...current, [connectionId]: { ...peer, stream: remoteStream ?? null } };
+          return { ...current, [connectionId]: { ...peer, stream: remoteStream } };
         });
       };
 
@@ -190,7 +204,10 @@ export function useMeetingRoom({
     socketRef.current = socket;
 
     socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
+    socket.onclose = (event) => {
+      setConnected(false);
+      if (event.code === WS_REPLACED_ELSEWHERE) handlersRef.current.onReplaced();
+    };
 
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as ServerEvent;
@@ -198,11 +215,24 @@ export function useMeetingRoom({
       switch (message.type) {
         case "welcome": {
           setSelf(message.self);
-          setPeers(Object.fromEntries(message.peers.map((peer) => [peer.connectionId, { ...peer, stream: null }])));
+          setPeers(
+            Object.fromEntries(
+              message.peers.map((peer) => [
+                peer.connectionId,
+                { ...peer, stream: pendingStreamsRef.current.get(peer.connectionId) ?? null },
+              ]),
+            ),
+          );
           break;
         }
         case "peer-joined": {
-          setPeers((current) => ({ ...current, [message.peer.connectionId]: { ...message.peer, stream: null } }));
+          setPeers((current) => ({
+            ...current,
+            [message.peer.connectionId]: {
+              ...message.peer,
+              stream: pendingStreamsRef.current.get(message.peer.connectionId) ?? null,
+            },
+          }));
           // We were here first, so we make the offer.
           void offerTo(message.peer.connectionId);
           break;
@@ -280,6 +310,7 @@ export function useMeetingRoom({
 
     const connections = connectionsRef.current;
     const pendingIce = pendingIceRef.current;
+    const pendingStreams = pendingStreamsRef.current;
 
     return () => {
       window.clearInterval(heartbeat);
@@ -288,6 +319,7 @@ export function useMeetingRoom({
       connections.forEach((connection) => connection.close());
       connections.clear();
       pendingIce.clear();
+      pendingStreams.clear();
       setPeers({});
       setConnected(false);
     };
