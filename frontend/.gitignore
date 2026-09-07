@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...opted in: the deployed API base is public and belongs in version control.
+!.env.production
 
 # vercel
 .vercel
