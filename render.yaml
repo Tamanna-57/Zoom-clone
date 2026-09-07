@@ -1,0 +1,27 @@
+# One-click backend deploy: Render → New → Blueprint → point at this repo.
+#
+# The frontend is deployed separately on Vercel with the root directory set to
+# `frontend/` and NEXT_PUBLIC_API_URL pointing at the URL this service gets.
+services:
+  - type: web
+    name: zoomeet-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Seeding is idempotent — it fills an empty database and no-ops otherwise.
+    # A free instance has no persistent disk, so a cold start reseeds the demo
+    # data, which is what you want for a demo and not what you want in prod.
+    startCommand: python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: JWT_SECRET
+        generateValue: true
+      # Add your Vercel domain here (any *.vercel.app origin is already allowed
+      # by the regex in app/main.py, so this is for custom domains).
+      - key: CORS_ORIGINS
+        value: https://zoom-clone-six-phi.vercel.app
+      - key: MOCK_OTP
+        value: "123456"
