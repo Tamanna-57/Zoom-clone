@@ -76,16 +76,40 @@ export function VideoTile({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useSpeaking(stream, isMuted);
+  const [blocked, setBlocked] = useState(false);
 
   useEffect(() => {
     const element = videoRef.current;
     if (!element || element.srcObject === stream) return;
     element.srcObject = stream;
+    if (!stream) return;
+
     // A stream attached after mount does not always resume on its own, and a
-    // paused remote tile is silent as well as still. Autoplay is permitted here
-    // because joining the call was a user gesture.
-    if (stream) void element.play().catch(() => undefined);
-  }, [stream]);
+    // paused remote tile is silent as well as still. Safari additionally refuses
+    // to autoplay audible media, so fall back to a muted start (which it does
+    // allow) and offer the viewer one click to turn the sound on, rather than
+    // showing a frozen tile with no explanation.
+    let cancelled = false;
+    element.play().catch(() => {
+      if (cancelled || isSelf) return;
+      element.muted = true;
+      element.play().then(
+        () => !cancelled && setBlocked(true),
+        () => undefined,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [stream, isSelf]);
+
+  function unblockAudio() {
+    const element = videoRef.current;
+    if (!element) return;
+    element.muted = false;
+    void element.play().catch(() => undefined);
+    setBlocked(false);
+  }
 
   return (
     <div
@@ -108,6 +132,15 @@ export function VideoTile({
         <div className="absolute inset-0 grid place-items-center bg-ink-850">
           <Avatar name={name} color={color} size={spotlight ? "xl" : "lg"} />
         </div>
+      )}
+
+      {blocked && (
+        <button
+          onClick={unblockAudio}
+          className="absolute inset-x-0 top-0 z-10 bg-zoom-blue/90 px-2 py-1.5 text-[11px] font-semibold text-white"
+        >
+          Tap to turn on sound
+        </button>
       )}
 
       {isHandRaised && (

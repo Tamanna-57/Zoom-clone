@@ -180,8 +180,29 @@ export interface PeerInfo {
   isSharing: boolean;
 }
 
+/** One freehand line on the shared whiteboard, in 0..1 canvas coordinates. */
+export interface Stroke {
+  points: [number, number][];
+  color: string;
+  width: number;
+  by?: string;
+}
+
+export interface Poll {
+  id: string;
+  question: string;
+  options: string[];
+  createdBy: string;
+  isOpen: boolean;
+  counts: number[];
+  myVote: number | null;
+}
+
 export type ServerEvent =
-  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[] }
+  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; whiteboard?: Stroke[]; polls?: Poll[] }
+  | { type: "whiteboard"; action: "stroke"; stroke: Stroke }
+  | { type: "whiteboard"; action: "clear" }
+  | { type: "poll"; poll: Poll }
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-left"; connectionId: string; userId: number }
   | { type: "peer-state"; peer: PeerInfo }

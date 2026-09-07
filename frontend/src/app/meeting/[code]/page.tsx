@@ -7,8 +7,11 @@ import { AiNotesPanel } from "@/components/meeting/AiNotesPanel";
 import { ChatPanel } from "@/components/meeting/ChatPanel";
 import { MeetingToolbar } from "@/components/meeting/MeetingToolbar";
 import { ParticipantsPanel } from "@/components/meeting/ParticipantsPanel";
+import { PollsPanel } from "@/components/meeting/PollsPanel";
 import { PreJoin } from "@/components/meeting/PreJoin";
+import { SidePanel } from "@/components/meeting/SidePanel";
 import { VideoTile } from "@/components/meeting/VideoTile";
+import { Whiteboard } from "@/components/meeting/Whiteboard";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
@@ -23,7 +26,7 @@ import { useMeetingRoom } from "@/lib/useMeetingRoom";
 import type { JoinResponse, Meeting } from "@/lib/types";
 
 type Phase = "loading" | "prejoin" | "live" | "over";
-type Panel = "chat" | "people" | "notes" | null;
+type Panel = "chat" | "people" | "notes" | "whiteboard" | "polls" | null;
 
 /** One video square: the local camera or one remote peer. */
 interface Tile {
@@ -592,6 +595,31 @@ export default function MeetingPage() {
                 onInvite={() => setShowInfo(true)}
               />
             )}
+            {panel === "whiteboard" && (
+              <SidePanel title="Whiteboard" onClose={() => setPanel(null)}>
+                <div className="h-[70vh] p-3 md:h-full">
+                  <Whiteboard
+                    strokes={room.strokes}
+                    onStroke={room.sendStroke}
+                    onClear={room.clearBoard}
+                    canClear={isHost || joinData?.participant.role === "cohost"}
+                  />
+                </div>
+              </SidePanel>
+            )}
+            {panel === "polls" && (
+              <SidePanel title="Polls" onClose={() => setPanel(null)}>
+                <div className="p-3">
+                  <PollsPanel
+                    polls={room.polls}
+                    canManage={isHost || joinData?.participant.role === "cohost"}
+                    onCreate={room.createPoll}
+                    onVote={room.votePoll}
+                    onClose={room.closePoll}
+                  />
+                </div>
+              </SidePanel>
+            )}
             {panel === "notes" && (
               <AiNotesPanel
                 segments={room.segments}
@@ -628,6 +656,8 @@ export default function MeetingPage() {
         onToggleHand={toggleHand}
         onToggleCaptions={() => (captions.listening ? captions.disable() : captions.enable())}
         onReaction={(emoji) => room.sendReaction(emoji)}
+        onOpenWhiteboard={() => setPanel((current) => (current === "whiteboard" ? null : "whiteboard"))}
+        onOpenPolls={() => setPanel((current) => (current === "polls" ? null : "polls"))}
         onOpenPanel={(next) => setPanel((current) => (current === next ? null : next))}
         onLeave={() => void leave()}
         onEnd={() => void endForAll()}

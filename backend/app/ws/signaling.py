@@ -28,7 +28,7 @@ from ..models import (
 )
 from ..schemas import ChatMessageOut
 from ..security import decode_access_token
-from .hub import Connection, hub
+from .hub import Connection, Poll, hub
 
 router = APIRouter()
 
@@ -107,8 +107,16 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
             except Exception:  # pragma: no cover - socket already gone
                 await hub.remove(meeting.code, previous.id)
 
+        room = hub.room(meeting.code)
         await websocket.send_json(
-            {"type": "welcome", "self": connection.peer_payload(), "peers": existing_peers}
+            {
+                "type": "welcome",
+                "self": connection.peer_payload(),
+                "peers": existing_peers,
+                # Whoever joins late still needs the board and the open ballots.
+                "whiteboard": list(room.strokes) if room else [],
+                "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
+            }
         )
         # Existing peers create the offer; the newcomer answers. One offerer per
         # pair keeps the mesh from glare-colliding.
@@ -251,6 +259,99 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
                 },
             },
         )
+        return
+
+    if kind == "whiteboard":
+        room = hub.room(meeting.code)
+        if room is None:
+            return
+        action = message.get("action")
+        if action == "clear":
+            room.strokes.clear()
+            await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "clear"})
+            return
+        if action != "stroke":
+            return
+        stroke = message.get("stroke")
+        if not isinstance(stroke, dict):
+            return
+        points = stroke.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            return
+        clean = {
+            # Points are normalised 0..1 so every screen size draws the same
+            # picture; clamping here keeps a hostile client inside the canvas.
+            "points": [
+                [min(max(float(x), 0.0), 1.0), min(max(float(y), 0.0), 1.0)]
+                for x, y in (pair for pair in points[:500] if isinstance(pair, list) and len(pair) == 2)
+            ],
+            "color": str(stroke.get("color", "#ffffff"))[:16],
+            "width": min(max(int(stroke.get("width", 3)), 1), 40),
+            "by": connection.display_name,
+        }
+        if len(clean["points"]) < 2:
+            return
+        # A long call should not grow an unbounded board in memory.
+        room.strokes.append(clean)
+        del room.strokes[:-2000]
+        await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "stroke", "stroke": clean})
+        return
+
+    if kind == "poll":
+        room = hub.room(meeting.code)
+        if room is None:
+            return
+        action = message.get("action")
+
+        if action == "create":
+            if connection.role == "participant":
+                return
+            question = str(message.get("question", "")).strip()[:200]
+            options = [
+                str(o).strip()[:80]
+                for o in (message.get("options") or [])
+                if str(o).strip()
+            ][:6]
+            if not question or len(options) < 2:
+                return
+            poll = Poll(
+                id=uuid.uuid4().hex[:12],
+                question=question,
+                options=options,
+                created_by=connection.display_name,
+            )
+            room.polls[poll.id] = poll
+            for peer in hub.peers(meeting.code):
+                await hub.send_to(
+                    meeting.code, peer.id, {"type": "poll", "poll": poll.payload(peer.user_id)}
+                )
+            return
+
+        poll = room.polls.get(str(message.get("pollId", "")))
+        if poll is None:
+            return
+
+        if action == "vote":
+            if not poll.is_open:
+                return
+            choice = message.get("choice")
+            if not isinstance(choice, int) or not 0 <= choice < len(poll.options):
+                return
+            # One ballot per person: drop any previous pick before recording.
+            for voters in poll.votes.values():
+                voters.discard(user.id)
+            poll.votes.setdefault(choice, set()).add(user.id)
+        elif action == "close":
+            if connection.role == "participant":
+                return
+            poll.is_open = False
+        else:
+            return
+
+        for peer in hub.peers(meeting.code):
+            await hub.send_to(
+                meeting.code, peer.id, {"type": "poll", "poll": poll.payload(peer.user_id)}
+            )
         return
 
     if kind == "ping":

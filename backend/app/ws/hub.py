@@ -47,9 +47,36 @@ class Connection:
 
 
 @dataclass
+class Poll:
+    id: str
+    question: str
+    options: list[str]
+    created_by: str
+    is_open: bool = True
+    # option index -> the user ids that picked it, so a re-vote moves the tally
+    # instead of double-counting and one person cannot stuff the ballot.
+    votes: dict[int, set[int]] = field(default_factory=dict)
+
+    def payload(self, viewer_id: int | None = None) -> dict:
+        return {
+            "id": self.id,
+            "question": self.question,
+            "options": self.options,
+            "createdBy": self.created_by,
+            "isOpen": self.is_open,
+            "counts": [len(self.votes.get(i, set())) for i in range(len(self.options))],
+            "myVote": next((i for i, voters in self.votes.items() if viewer_id in voters), None),
+        }
+
+
+@dataclass
 class Room:
     code: str
     connections: dict[str, Connection] = field(default_factory=dict)
+    # Whiteboard strokes and polls live as long as the call does. Both are
+    # replayed to late joiners so everyone sees the same board and ballot.
+    strokes: list[dict] = field(default_factory=list)
+    polls: dict[str, Poll] = field(default_factory=dict)
 
 
 class Hub:
@@ -76,6 +103,9 @@ class Hub:
         if not room:
             return []
         return [c for cid, c in room.connections.items() if cid != exclude]
+
+    def room(self, meeting_code: str) -> Room | None:
+        return self._rooms.get(meeting_code)
 
     def get(self, meeting_code: str, connection_id: str) -> Connection | None:
         room = self._rooms.get(meeting_code)

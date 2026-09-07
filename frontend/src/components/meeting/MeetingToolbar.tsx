@@ -78,6 +78,8 @@ export function MeetingToolbar({
   onLeave,
   onEnd,
   onComingSoon,
+  onOpenWhiteboard,
+  onOpenPolls,
 }: {
   isMuted: boolean;
   isVideoOn: boolean;
@@ -101,6 +103,8 @@ export function MeetingToolbar({
   onLeave: () => void;
   onEnd: () => void;
   onComingSoon: (feature: string) => void;
+  onOpenWhiteboard: () => void;
+  onOpenPolls: () => void;
 }) {
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -183,7 +187,22 @@ export function MeetingToolbar({
                 </span>
                 <span className="text-[10px] uppercase text-ink-300">{captionsSupported ? (captionsOn ? "On" : "Off") : "N/A"}</span>
               </button>
-              {["Breakout Rooms", "Whiteboard", "Polls", "Virtual background", "Live streaming"].map((feature) => (
+              {([
+                { label: "Whiteboard", open: onOpenWhiteboard },
+                { label: "Polls", open: onOpenPolls },
+              ] as const).map((feature) => (
+                <button
+                  key={feature.label}
+                  onClick={() => {
+                    feature.open();
+                    setMoreOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 transition hover:bg-white/10"
+                >
+                  <Icon name="grid" size={15} /> {feature.label}
+                </button>
+              ))}
+              {["Breakout Rooms", "Virtual background", "Live streaming"].map((feature) => (
                 <button
                   key={feature}
                   onClick={() => {
