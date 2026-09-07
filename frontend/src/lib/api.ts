@@ -34,15 +34,26 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
-  const response = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers ?? {}),
+      },
+      cache: "no-store",
+    });
+  } catch {
+    // fetch only rejects when the request never reached the server: the backend
+    // is down, the URL is wrong, or the browser blocked it. Say which.
+    throw new ApiError(
+      0,
+      `Cannot reach the Zoomeet API at ${API_URL}. Start the backend, or set NEXT_PUBLIC_API_URL for this deployment.`,
+    );
+  }
 
   if (response.status === 204) return undefined as T;
 

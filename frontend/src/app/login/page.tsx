@@ -10,6 +10,7 @@ import { Field, inputClass } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
 import { Spinner } from "@/components/ui/Spinner";
 import { useAuth } from "@/lib/auth";
+import { API_URL } from "@/lib/config";
 import { useToast } from "@/lib/toast";
 
 const DEMO_ACCOUNTS = [
@@ -27,10 +28,19 @@ export default function LoginPage() {
   const [password, setPassword] = useState("password123");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [misconfigured, setMisconfigured] = useState(false);
 
   useEffect(() => {
     if (!loading && user) router.replace("/home");
   }, [user, loading, router]);
+
+  // A hosted build that still points at localhost cannot work: the browser
+  // blocks a plain-HTTP call from an HTTPS page. Say so before they try.
+  useEffect(() => {
+    setMisconfigured(
+      window.location.protocol === "https:" && /localhost|127\.0\.0\.1/.test(API_URL),
+    );
+  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -58,6 +68,16 @@ export default function LoginPage() {
 
       <h1 className="text-2xl font-bold text-body">Sign in</h1>
       <p className="mt-1 text-sm text-muted">Use a seeded demo account or your own.</p>
+
+      {misconfigured && (
+        <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-xs leading-relaxed text-amber-700">
+          <p className="font-semibold">This deployment has no backend configured.</p>
+          <p className="mt-1">
+            It is calling <span className="font-mono">{API_URL}</span>, which a hosted page cannot reach.
+            Set <span className="font-mono">NEXT_PUBLIC_API_URL</span> to your deployed API and redeploy.
+          </p>
+        </div>
+      )}
 
       <form onSubmit={submit} className="mt-6 space-y-4">
         <Field label="Email">

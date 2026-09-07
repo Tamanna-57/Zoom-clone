@@ -414,33 +414,69 @@ Per the brief, these are deliberately simulated:
 
 ## Deployment
 
-The two halves deploy independently.
+Zoomeet is **two deployables**. Vercel hosts the frontend only — on its own it will
+load and then fail every request, because a page served over HTTPS is not allowed to
+call `http://localhost:8000`. Deploy the backend first.
 
-**Backend (Render / Railway / Fly)**
+### 1. Backend (Render — a blueprint is committed)
 
-```
-Build:  pip install -r requirements.txt
-Start:  uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
-```
-
-Set `JWT_SECRET`, `CORS_ORIGINS=https://<your-frontend-domain>` and, on a platform
-with an ephemeral disk, point `DATABASE_URL` at a mounted volume (or a hosted
-Postgres — the models are plain SQLAlchemy). Run `python seed.py --fresh` once to
-populate the demo data. Keep it at **one worker**: the socket hub is in-process.
-
-**Frontend (Vercel / Netlify)**
+`render.yaml` at the repo root defines the service. In Render: **New → Blueprint →**
+select this repo → Apply. It uses:
 
 ```
-Root directory: frontend
-Build:          npm run build
-Env:            NEXT_PUBLIC_API_URL=https://<your-backend-domain>
+Root directory: backend
+Build:          pip install -r requirements.txt
+Start:          python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+Health check:   /api/health
 ```
 
-The backend already allows any `*.vercel.app` origin in addition to `CORS_ORIGINS`.
-Both halves must be served over HTTPS — browsers only grant camera and microphone
-access on a secure origin.
+Seeding is idempotent — it fills an empty database and no-ops otherwise — so a cold
+start on the free tier reseeds the demo users and meetings automatically.
 
----
+Note the service URL it gives you (e.g. `https://zoomeet-api.onrender.com`) and check
+`https://<that-url>/api/health` returns `{"status":"ok"}` before moving on.
+
+Any other host works the same way; only two things matter:
+
+- **one worker** — the WebSocket hub is in-process, so a second worker would split the room;
+- **a writable path for SQLite** — the free Render tier has no persistent disk, so data
+  resets on restart. For durable data, attach a disk and set
+  `DATABASE_URL=sqlite:////var/data/zoomeet.db`, or point `DATABASE_URL` at Postgres
+  (the models are plain SQLAlchemy and need no changes).
+
+Set `JWT_SECRET` to something random in any deployment. `CORS_ORIGINS` only matters for
+custom domains — every `*.vercel.app` origin is already allowed by `app/main.py`.
+
+### 2. Frontend (Vercel)
+
+In the Vercel project settings:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `frontend` ← **required**, the repo root has no `package.json` |
+| Framework | Next.js (auto-detected) |
+| Environment variable | `NEXT_PUBLIC_API_URL = https://<your-render-url>` |
+
+`NEXT_PUBLIC_*` is inlined **at build time**, so after adding or changing it you must
+**redeploy** — saving the variable alone changes nothing.
+
+If the backend is missing or the variable is unset, the sign-in page says so explicitly
+rather than failing silently.
+
+### 3. Check it end to end
+
+1. Open the site, sign in as `priya@zoomeet.dev` / `password123`.
+2. **New Meeting**, allow camera and microphone.
+3. In a second browser profile, sign in as `arjun@zoomeet.dev` and join the same
+   meeting ID. Both tiles should show live video.
+4. Stop the recording — the recap appears under **AI Notes**.
+
+Both halves must be HTTPS: browsers only grant camera and microphone access on a
+secure origin, and an HTTPS page can only open a `wss://` socket.
+
+**One caveat for a live demo:** free Render instances sleep after ~15 minutes idle and
+take ~50 seconds to wake, which drops WebSocket connections. Load the site once before
+demoing, or use a paid instance.
 
 ## Verification
 
