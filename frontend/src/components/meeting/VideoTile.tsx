@@ -79,7 +79,12 @@ export function VideoTile({
 
   useEffect(() => {
     const element = videoRef.current;
-    if (element && element.srcObject !== stream) element.srcObject = stream;
+    if (!element || element.srcObject === stream) return;
+    element.srcObject = stream;
+    // A stream attached after mount does not always resume on its own, and a
+    // paused remote tile is silent as well as still. Autoplay is permitted here
+    // because joining the call was a user gesture.
+    if (stream) void element.play().catch(() => undefined);
   }, [stream]);
 
   return (

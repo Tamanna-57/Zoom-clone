@@ -167,6 +167,16 @@ export default function MeetingPage() {
     [joinData, notify],
   );
 
+  const handleReplaced = useCallback(() => {
+    notify({
+      kind: "error",
+      title: "You joined from somewhere else",
+      detail: "This meeting is now open in another tab or device.",
+    });
+    setEndedBy(null);
+    setPhase("over");
+  }, [notify]);
+
   const room = useMeetingRoom({
     code,
     localStream: stream,
@@ -176,6 +186,7 @@ export default function MeetingPage() {
     onRecordingChanged: handleRecordingChanged,
     onForceMute: handleForceMute,
     onRemoved: handleRemoved,
+    onReplaced: handleReplaced,
     selfParticipantId: joinData?.participant.id ?? null,
   });
 
@@ -189,6 +200,25 @@ export default function MeetingPage() {
   );
 
   const captions = useSpeechTranscription(pushTranscript);
+
+  // The server starts each participant from whatever the meeting's entry policy
+  // says, but the pre-join screen is what the user actually chose. Without this
+  // the other side renders a camera-on peer as an avatar (or vice versa) and the
+  // video element stays hidden even though media is flowing.
+  const { connected: roomConnected, sendState } = room;
+  useEffect(() => {
+    if (!roomConnected) return;
+    sendState({ isMuted: !micOn, isVideoOn: cameraOn, isHandRaised: handRaised, isSharing });
+  }, [roomConnected, micOn, cameraOn, handRaised, isSharing, sendState]);
+
+  // A muted microphone must not feed the notetaker. The recogniser opens its own
+  // capture, so disabling the outgoing track is not enough to silence it.
+  const { supported: captionsSupported, enable: enableCaptions, disable: disableCaptions } = captions;
+  useEffect(() => {
+    if (!captionsSupported || phase !== "live") return;
+    if (micOn) enableCaptions();
+    else disableCaptions();
+  }, [micOn, phase, captionsSupported, enableCaptions, disableCaptions]);
 
   // Unread badge while the chat panel is closed.
   const lastSeenRef = useRef(0);
@@ -235,7 +265,6 @@ export default function MeetingPage() {
       } else if (response.meeting.auto_record && response.meeting.host.id === user?.id) {
         await startRecording();
       }
-      if (captions.supported) captions.enable();
       if (search.get("share") === "1") void toggleShare();
     } catch (caught) {
       setJoinError(caught instanceof Error ? caught.message : "Could not join this meeting");

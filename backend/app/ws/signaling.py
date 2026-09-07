@@ -32,6 +32,10 @@ from .hub import Connection, hub
 
 router = APIRouter()
 
+# Sent to the older socket when the same account joins the room again, so the
+# browser can tell "you opened this meeting somewhere else" apart from a drop.
+WS_REPLACED_ELSEWHERE = 4409
+
 MEDIA_STATE_FIELDS = {
     "isMuted": "is_muted",
     "isVideoOn": "is_video_on",
@@ -83,8 +87,25 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
         )
 
         await websocket.accept()
-        existing_peers = [p.peer_payload() for p in hub.peers(meeting.code)]
+
+        # One account is one seat. A second tab (or another device) signing in as
+        # the same user retires the older socket instead of appearing twice in
+        # the mesh. Register the newcomer first so the closing socket sees the
+        # user as still present and does not mark the participant offline.
         await hub.add(connection)
+        superseded = hub.connections_for_user(meeting.code, user.id, exclude=connection.id)
+
+        stale = {c.id for c in superseded}
+        existing_peers = [
+            p.peer_payload() for p in hub.peers(meeting.code, exclude=connection.id)
+            if p.id not in stale
+        ]
+
+        for previous in superseded:
+            try:
+                await previous.websocket.close(code=WS_REPLACED_ELSEWHERE)
+            except Exception:  # pragma: no cover - socket already gone
+                await hub.remove(meeting.code, previous.id)
 
         await websocket.send_json(
             {"type": "welcome", "self": connection.peer_payload(), "peers": existing_peers}
@@ -187,6 +208,11 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
     if kind == "transcript":
         text = str(message.get("text", "")).strip()
         if not text:
+            return
+        # A muted microphone produces no transcript. The browser also stops its
+        # recogniser on mute, but the recogniser listens to the raw device rather
+        # than to the outgoing track, so the server is the authority here.
+        if connection.is_muted:
             return
         recording = db.scalar(
             select(Recording)

@@ -84,6 +84,16 @@ class Hub:
     def online_user_ids(self, meeting_code: str) -> set[int]:
         return {c.user_id for c in self.peers(meeting_code)}
 
+    def connections_for_user(
+        self, meeting_code: str, user_id: int, exclude: str | None = None
+    ) -> list[Connection]:
+        """Every live socket a given user holds in a room.
+
+        One person opening a second tab must not appear twice in the call, so the
+        signaling endpoint uses this to retire the older socket.
+        """
+        return [c for c in self.peers(meeting_code, exclude=exclude) if c.user_id == user_id]
+
     async def send_to(self, meeting_code: str, connection_id: str, payload: dict) -> None:
         connection = self.get(meeting_code, connection_id)
         if connection is None:
