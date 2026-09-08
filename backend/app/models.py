@@ -64,7 +64,14 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(120))
-    password_hash: Mapped[str] = mapped_column(String(255))
+    # NULL for an account that only ever signs in with Google, which has no
+    # password to hash. `routers.auth.login` rejects those explicitly.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Google's immutable subject id. Matched before e-mail, because a Google
+    # account can change its address but never its `sub`.
+    google_sub: Mapped[str | None] = mapped_column(
+        String(64), unique=True, index=True, nullable=True
+    )
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Deterministic tile colour so a user looks the same everywhere without uploads.
     avatar_color: Mapped[str] = mapped_column(String(9), default="#2D8CFF")

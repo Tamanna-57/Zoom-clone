@@ -3,6 +3,7 @@ import type {
   ActionItem,
   AuthResponse,
   ChatMessage,
+  ClientConfig,
   Contact,
   JoinResponse,
   Meeting,
@@ -86,8 +87,11 @@ export const api = {
     post<AuthResponse>("/api/auth/register", body),
   verify: (body: { email: string; code: string }) => post<AuthResponse>("/api/auth/verify", body),
   login: (body: { email: string; password: string }) => post<AuthResponse>("/api/auth/login", body),
+  // `credential` is the ID token Google Identity Services handed the browser.
+  googleLogin: (credential: string) => post<AuthResponse>("/api/auth/google", { credential }),
   logout: () => post<void>("/api/auth/logout"),
   me: () => get<User>("/api/auth/me"),
+  clientConfig: () => get<ClientConfig>("/api/config"),
   updateProfile: (body: Partial<Pick<User, "display_name" | "job_title" | "avatar_color" | "timezone">>) =>
     patch<User>("/api/me", body),
 

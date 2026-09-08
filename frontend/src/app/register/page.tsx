@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { AuthLayout } from "@/components/auth/AuthLayout";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { Button } from "@/components/ui/Button";
 import { Field, inputClass } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
@@ -15,7 +16,10 @@ import { useToast } from "@/lib/toast";
 
 /**
  * Two-step onboarding that mirrors Zoom's sign-up: details first, then a
- * verification code. Verification is mocked — the backend accepts one fixed OTP.
+ * verification code. Signing up with Google skips both steps, because Google
+ * has already proved the address.
+ *
+ * E-mail verification is still mocked — the backend accepts one fixed OTP.
  */
 export default function RegisterPage() {
   const { signUp, verify } = useAuth();
@@ -71,7 +75,7 @@ export default function RegisterPage() {
       {step === "details" ? (
         <>
           <h1 className="text-2xl font-bold text-body">Create your account</h1>
-          <p className="mt-1 text-sm text-muted">Free for this demo. No card, no real SMS.</p>
+          <p className="mt-1 text-sm text-muted">Free to use. No card required.</p>
 
           <form onSubmit={submitDetails} className="mt-6 space-y-4">
             <Field label="Full name">
@@ -98,7 +102,16 @@ export default function RegisterPage() {
             </Button>
           </form>
 
-          <p className="mt-4 text-center text-sm text-muted">
+          <GoogleSignInButton
+            text="signup_with"
+            onSignedIn={() => {
+              notify({ kind: "success", title: "Welcome to Zoomeet", detail: "Signed up with Google." });
+              router.replace("/home");
+            }}
+            onError={setError}
+          />
+
+          <p className="mt-6 text-center text-sm text-muted">
             Already have an account?{" "}
             <Link href="/login" className="font-semibold text-zoom-blue hover:underline">
               Sign in
@@ -129,7 +142,7 @@ export default function RegisterPage() {
             </Field>
 
             <p className="rounded-lg bg-zoom-blue-soft px-3 py-2 text-xs text-zoom-blue">
-              This build simulates SMS verification — the code is always{" "}
+              E-mail verification is not wired to a mail provider yet — the code is always{" "}
               <button type="button" onClick={() => setCode(MOCK_OTP)} className="font-bold underline">
                 {MOCK_OTP}
               </button>

@@ -20,9 +20,9 @@ summariser that runs server-side with no external API key.
 
 **<https://zoom-clone-six-wine.vercel.app>**
 
-Sign in with a seeded account — `priya@zoomeet.dev` / `password123` — or register your
-own and use the mocked OTP `123456`. To see real peer-to-peer video, open the site in a
-second browser profile as `arjun@zoomeet.dev` and join the same meeting ID.
+**Continue with Google**, or create an account with an e-mail address. To see real
+peer-to-peer video, sign in as a second user in another browser profile and join the
+same meeting ID.
 
 The backend runs on a free Render instance that sleeps after ~15 minutes idle and takes
 ~50 seconds to wake, so the first sign-in after a quiet spell can hang briefly. Load the
@@ -36,7 +36,8 @@ site once before you demo it.
 - [Features](#features)
 - [Tech stack](#tech-stack)
 - [Running it locally](#running-it-locally)
-- [Seeded demo accounts](#seeded-demo-accounts)
+- [Signing in](#signing-in)
+- [Database migrations](#database-migrations)
 - [Architecture](#architecture)
 - [Database schema](#database-schema)
 - [API overview](#api-overview)
@@ -52,8 +53,12 @@ site once before you demo it.
 ## Features
 
 ### Authentication and onboarding
+- **Continue with Google** — Google Identity Services on the client, ID-token
+  verification against Google's JWKS on the server. Signing in with a Google address
+  that already has a password account links the two rather than creating a second one.
 - Register with e-mail, display name, job title and password.
-- Two-step sign-up with a **mocked** verification code (fixed OTP, `123456`).
+- Two-step sign-up with a **mocked** verification code (fixed OTP, `123456`); Google
+  accounts skip it, because Google has already verified the address.
 - JWT access token persisted in the browser; session survives reloads.
 - Login / logout, profile editing, avatar colour picker, personal meeting ID.
 
@@ -111,7 +116,8 @@ site once before you demo it.
 | Media | WebRTC mesh (`RTCPeerConnection`) | Real peer-to-peer audio/video; the server never touches media |
 | Transcription | Web Speech API (browser) | No API key, no audio upload |
 | Summarisation | Rule-based extractive summariser (`app/services/summarizer.py`) | Deterministic, offline, swappable for an LLM behind one function |
-| Auth | JWT (PyJWT) + PBKDF2-SHA256 | Pure standard library hashing; installs anywhere |
+| Auth | JWT (PyJWT) + PBKDF2-SHA256, Google Identity Services | Standard-library hashing; Google ID tokens verified locally against Google's JWKS |
+| Schema | Alembic migrations | The schema is versioned and applied by `alembic upgrade head`, never created at boot |
 
 No state management library: React context for auth/theme/toasts, local state elsewhere.
 
@@ -129,9 +135,12 @@ python3 -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-python seed.py --fresh               # seeds users, meetings, transcripts, recaps
+cp .env.example .env                 # optional; every value has a working default
+alembic upgrade head                 # create/update the database schema
 uvicorn app.main:app --reload --port 8000
 ```
+
+The database starts **empty** — create the first account through the sign-up screen.
 
 API docs (Swagger): <http://localhost:8000/docs>
 
@@ -149,29 +158,78 @@ Open <http://localhost:3000>.
 ### Trying a real two-person call
 
 Open the app in two different browser profiles (or one normal + one incognito window),
-sign in as two different seeded users, start a meeting in one and paste its meeting ID
+sign in as two different users, start a meeting in one and paste its meeting ID
 into **Join** in the other. Both windows need camera/microphone permission. Chrome or
 Edge is recommended — live captions use the Web Speech API, which Firefox and Safari
 do not implement (everything else works there).
 
 ---
 
-## Seeded demo accounts
+## Signing in
 
-`python seed.py --fresh` creates six colleagues. **Password for all: `password123`.**
+Two ways in, and they end at the same account:
 
-| Email | Name | Role |
-| --- | --- | --- |
-| `priya@zoomeet.dev` | Priya Nair | VP Product — hosts the launch review |
-| `arjun@zoomeet.dev` | Arjun Mehta | Staff Engineer — hosts a live incident review |
-| `dev@zoomeet.dev` | Dev Sharma | Design Lead — hosts the design critique |
-| `meera@zoomeet.dev` | Meera Iyer | Engineering Manager — hosts the weekly sync |
-| `rahul@zoomeet.dev` | Rahul Verma | Data Analyst |
-| `sara@zoomeet.dev` | Sara Khan | Customer Success |
+| Method | What happens |
+| --- | --- |
+| E-mail + password | Sign up, then enter the verification code. Passwords are PBKDF2-HMAC-SHA256 with a per-user salt. |
+| Continue with Google | Google returns a signed ID token, the backend verifies it against Google's published keys and issues a Zoomeet token. |
 
-The seed also creates three finished meetings with full transcripts and generated
-recaps, one meeting that is live right now, three scheduled meetings, in-call chat,
-highlights and a personal room per user. The mocked verification code is `123456`.
+An account created with Google has **no password**, so a password sign-in for that
+address is refused with a message pointing at the Google button. Signing in with Google
+using an address that already registered with a password **links** the Google identity
+to that account instead of creating a duplicate — after which either method works.
+
+### Turning on Google Sign-In
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials),
+   create an **OAuth 2.0 Client ID** of type *Web application*.
+2. Add your site to **Authorised JavaScript origins** — `http://localhost:3000` for
+   local development, and your deployed origin (e.g.
+   `https://zoom-clone-six-wine.vercel.app`) for production. No redirect URI is needed;
+   Google Identity Services never leaves the page.
+3. Set `GOOGLE_CLIENT_ID` on the **backend** and restart it.
+
+The browser reads the client id from `GET /api/config`, so rotating the credential is a
+backend environment change with no frontend rebuild. With `GOOGLE_CLIENT_ID` unset the
+button is simply not rendered and e-mail sign-in carries on working.
+
+Google users are trusted for their **e-mail address only**. The display name and
+profile picture are copied on first sign-in; everything else (personal meeting ID,
+avatar colour) is generated exactly as it is for a password account.
+
+---
+
+## Database migrations
+
+The schema is owned by [Alembic](https://alembic.sqlalchemy.org/), not by the
+application: nothing creates tables at boot, because `create_all()` cannot apply a
+change to a database that already exists — it silently leaves the old columns in place
+and the app fails at the first query.
+
+```bash
+cd backend
+alembic upgrade head                                   # apply everything
+alembic revision --autogenerate -m "add x to y"        # after editing app/models.py
+alembic downgrade -1                                   # step back one revision
+alembic current                                        # what is applied right now
+```
+
+| Revision | What it does |
+| --- | --- |
+| `0001` | The initial schema — eleven tables. |
+| `0002` | Google Sign-In: `users.google_sub`, and `users.password_hash` becomes nullable. |
+
+`migrations/env.py` reads `DATABASE_URL` from the application settings, so migrations
+always run against the same database the app talks to, and autogenerate compares
+against the real models. SQLite cannot `ALTER` a column in place, so migrations run in
+batch mode — the same revision applies on SQLite and on Postgres.
+
+**Upgrading a database created by an older build** (one that made its own tables at
+startup): tell Alembic that revision is already there, then upgrade.
+
+```bash
+alembic stamp 0001 && alembic upgrade head
+```
 
 ---
 
@@ -218,6 +276,8 @@ highlights and a personal room per user. The mocked verification code is `123456
 - `routers/` — HTTP endpoints; thin, no serialisation logic.
 - `serializers.py` — ORM → schema conversion in one place.
 - `services/summarizer.py` — pure functions, no database and no framework imports.
+- `services/google.py` — Google ID-token verification; the only code that trusts Google.
+- `migrations/` — Alembic revisions; the schema is applied from here, never at boot.
 - `ws/hub.py` — connection registry and fan-out; `ws/signaling.py` — the protocol.
 
 **Separation of concerns (frontend)**
@@ -251,7 +311,7 @@ users ─┬─< contacts (owner_id →users, contact_id →users, starred)
 
 | Table | Key columns | Notes |
 | --- | --- | --- |
-| `users` | `email` (unique), `display_name`, `password_hash`, `avatar_color`, `personal_meeting_id` (unique), `is_verified`, `last_seen_at` | `last_seen_at` powers the presence dot |
+| `users` | `email` (unique), `display_name`, `password_hash` (NULL for Google-only accounts), `google_sub` (unique, NULL), `avatar_color`, `personal_meeting_id` (unique), `is_verified`, `last_seen_at` | `last_seen_at` powers the presence dot; `google_sub` is matched before e-mail, because a Google account can change its address but never its subject id |
 | `contacts` | `owner_id`, `contact_id`, `starred` | Directional; unique on the pair |
 | `meetings` | `code` (unique, 11 digits), `topic`, `passcode`, `host_id`, `status` (scheduled/live/ended), `scheduled_start`, `duration_minutes`, `is_personal_room`, `waiting_room`, `mute_on_entry`, `video_on_entry`, `auto_record`, `agenda`, `started_at`, `ended_at` | The personal room is a meeting flagged `is_personal_room` whose code is the user's PMI |
 | `meeting_invitees` | `meeting_id`, `user_id` | Invited but maybe never attended |
@@ -287,6 +347,7 @@ All routes are JSON. Authenticated routes take `Authorization: Bearer <token>`.
 | POST | `/api/auth/register` | Create an account, returns a token |
 | POST | `/api/auth/verify` | Mocked OTP verification |
 | POST | `/api/auth/login` | Email + password |
+| POST | `/api/auth/google` | Exchange a Google ID token for a Zoomeet token |
 | GET | `/api/auth/me` | Current user |
 | POST | `/api/auth/logout` | Records sign-out (tokens are stateless) |
 
@@ -331,7 +392,9 @@ All routes are JSON. Authenticated routes take `Authorization: Bearer <token>`.
 | DELETE | `/api/highlights/{id}` | Remove a highlight |
 
 ### Meta
-`GET /api/health`, `GET /api/config` (ICE servers + the mock OTP for the UI hint).
+`GET /api/health`, `GET /api/config` (ICE servers, the mock OTP for the UI hint, and
+the Google client id — served rather than baked into the frontend build so the Google
+credentials can be rotated without redeploying the frontend).
 
 ---
 
@@ -389,7 +452,10 @@ routers, schema and UI stay as they are.
 
 Per the brief, these are deliberately simulated:
 
-- **Phone/e-mail verification** — one fixed OTP (`MOCK_OTP`, default `123456`).
+- **Phone/e-mail verification** — one fixed OTP (`MOCK_OTP`, default `123456`). Nothing
+  is sent, so the sign-up screen shows the code. Google sign-in is *not* mocked: those
+  addresses are verified by Google. Wiring a mail provider and dropping `MOCK_OTP` is
+  the one change left before password sign-up is production-grade.
 - **End-to-end encryption** — media is encrypted in transit by WebRTC's DTLS-SRTP,
   which is real, but there is no per-meeting key exchange or E2EE key ratchet.
   The Privacy settings page states this plainly rather than pretending otherwise.
@@ -421,9 +487,9 @@ Per the brief, these are deliberately simulated:
   it, and nobody can edit it.
 - **Guests must have an account.** Anonymous join-by-name was cut in favour of getting
   identity, presence and speaker attribution right.
-- **No test suite is committed.** Verification was done with an API/WebSocket smoke
-  script and a two-browser Playwright run (see below); a proper pytest + Playwright
-  suite is the first thing I would add next.
+- **Test coverage is partial.** `backend/tests/` covers the sign-in paths, including
+  Google ID-token verification; the meeting, WebSocket and recap paths are still
+  verified by hand (see below). A Playwright suite is the next thing to add.
 
 ---
 
@@ -441,12 +507,13 @@ select this repo → Apply. It uses:
 ```
 Root directory: backend
 Build:          pip install -r requirements.txt
-Start:          python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+Start:          alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
 Health check:   /api/health
 ```
 
-Seeding is idempotent — it fills an empty database and no-ops otherwise — so a cold
-start on the free tier reseeds the demo users and meetings automatically.
+The start command runs `alembic upgrade head` before uvicorn, so a deploy that changes
+the schema applies it exactly once and a failed migration stops the release instead of
+booting against the wrong tables.
 
 Note the service URL it gives you (e.g. `https://zoomeet-api.onrender.com`) and check
 `https://<that-url>/api/health` returns `{"status":"ok"}` before moving on.
@@ -454,13 +521,19 @@ Note the service URL it gives you (e.g. `https://zoomeet-api.onrender.com`) and 
 Any other host works the same way; only two things matter:
 
 - **one worker** — the WebSocket hub is in-process, so a second worker would split the room;
-- **a writable path for SQLite** — the free Render tier has no persistent disk, so data
-  resets on restart. For durable data, attach a disk and set
-  `DATABASE_URL=sqlite:////var/data/zoomeet.db`, or point `DATABASE_URL` at Postgres
-  (the models are plain SQLAlchemy and need no changes).
+- **durable storage** — the free Render tier has **no persistent disk**, so the default
+  SQLite file is lost on every restart and every account with it. For real use, attach
+  a disk and set `DATABASE_URL=sqlite:////var/data/zoomeet.db`, or point `DATABASE_URL`
+  at Postgres (the models are plain SQLAlchemy and the migrations run unchanged).
 
-Set `JWT_SECRET` to something random in any deployment. `CORS_ORIGINS` only matters for
-custom domains — every `*.vercel.app` origin is already allowed by `app/main.py`.
+Environment:
+
+| Variable | Why it matters |
+| --- | --- |
+| `JWT_SECRET` | Signs access tokens. Leave it at the development default and anyone can mint a token for any account — the API logs a warning at startup if you do. `render.yaml` generates one. |
+| `DATABASE_URL` | See above. The default SQLite file is fine locally and wrong on a disk-less host. |
+| `GOOGLE_CLIENT_ID` | Turns on "Continue with Google". Unset, the button is hidden. |
+| `CORS_ORIGINS` | Only needed for custom domains — every `*.vercel.app` origin is already allowed by `app/main.py`. |
 
 ### 2. Frontend (Vercel)
 
@@ -482,9 +555,9 @@ rather than failing silently.
 
 ### 3. Check it end to end
 
-1. Open the site, sign in as `priya@zoomeet.dev` / `password123`.
+1. Open the site and create an account (or **Continue with Google**).
 2. **New Meeting**, allow camera and microphone.
-3. In a second browser profile, sign in as `arjun@zoomeet.dev` and join the same
+3. In a second browser profile, sign in as a second user and join the same
    meeting ID. Both tiles should show live video.
 4. Stop the recording — the recap appears under **AI Notes**.
 
@@ -497,17 +570,39 @@ demoing, or use a paid instance.
 
 ## Verification
 
-What was actually exercised before shipping:
+```bash
+cd backend
+pip install -r requirements.txt -r requirements-dev.txt
+pytest                # 12 tests: registration, password login, Google sign-in
+```
+
+The suite builds its database by running the real Alembic migrations, so a broken
+revision fails the tests. The Google tests sign their own ID tokens with a throwaway
+RSA key and point the verifier at it, exercising the real signature, audience, issuer
+and expiry checks without calling Google. They cover: a new Google account arriving
+verified; repeat sign-in reusing the account; a Google identity linking to an existing
+password account without dropping its password; password sign-in refused on a
+Google-only account; and rejection of unverified e-mail, wrong audience, wrong issuer,
+expired tokens and unparseable credentials.
+
+Also checked: `alembic upgrade head` → `alembic check` reports no drift between the
+migrations and `app/models.py`, and `alembic downgrade base` → `upgrade head` round
+trips cleanly. On the frontend, `npm run build` and `npx tsc --noEmit` succeed and
+`npx eslint .` reports no errors.
+
+What was exercised by hand:
 
 - **Backend smoke test** — register → mocked OTP → login, wrong password rejected,
   scheduling, wrong passcode rejected, two participants joining, WebSocket welcome /
   peer-joined / SDP relay / state broadcast / chat / transcript ingest, recap
   generation, highlights, manual action items, the public share link, and rejoining a
   meeting that has ended (409).
-- **Two-browser Playwright run** — two seeded users signed in, scheduled a meeting
+- **Two-browser Playwright run** — two users signed in, scheduled a meeting
   through the modal, started an instant meeting, both joined, and the second video
   element on each side reported live remote frames (`videoWidth > 0`), proving the
   peer-to-peer connection carried media. Chat crossed the mesh, a reaction fired, a
   moment was highlighted, the host ended the meeting for all, and the generated recap
   rendered with TL;DR, sections, action items and talk time.
-- `npm run build` and `npx tsc --noEmit` are clean; `npx eslint .` reports no errors.
+
+These two predate the move off demo data and were run against the seeded workspace;
+the code paths they cover are unchanged.

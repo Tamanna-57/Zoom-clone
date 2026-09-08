@@ -35,7 +35,7 @@ export function AuthLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <p className="text-xs text-white/60">
-          Demo build — verification codes and encryption are simulated.
+          Calls are peer-to-peer over WebRTC. Recaps are generated on your own server.
         </p>
       </div>
 

@@ -4,12 +4,14 @@ import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { api, getToken, setToken } from "./api";
+import { forgetGoogleSession } from "./google";
 import type { AuthResponse, User } from "./types";
 
 interface AuthState {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signInWithGoogle: (credential: string) => Promise<void>;
   signUp: (body: { email: string; display_name: string; password: string; job_title?: string }) => Promise<void>;
   verify: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -56,6 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser,
       refresh,
       signIn: async (email, password) => adopt(await api.login({ email, password })),
+      signInWithGoogle: async (credential) => adopt(await api.googleLogin(credential)),
       signUp: async (body) => adopt(await api.register(body)),
       verify: async (email, code) => adopt(await api.verify({ email, code })),
       signOut: async () => {
@@ -66,6 +69,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setToken(null);
         setUser(null);
+        // Otherwise Google silently signs the same account straight back in.
+        forgetGoogleSession();
         router.push("/login");
       },
     }),

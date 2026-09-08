@@ -47,6 +47,12 @@ class VerifyOtpRequest(BaseModel):
     code: str
 
 
+class GoogleAuthRequest(BaseModel):
+    """The ID token Google Identity Services handed the browser."""
+
+    credential: str = Field(min_length=1)
+
+
 class UserPublic(ORMModel):
     id: int
     email: EmailStr
