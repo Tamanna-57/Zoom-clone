@@ -22,6 +22,6 @@ services:
       # Add your Vercel domain here (any *.vercel.app origin is already allowed
       # by the regex in app/main.py, so this is for custom domains).
       - key: CORS_ORIGINS
-        value: https://zoom-clone-six-phi.vercel.app
+        value: https://zoom-clone-six-wine.vercel.app
       - key: MOCK_OTP
         value: "123456"
