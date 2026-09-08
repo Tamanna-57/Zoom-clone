@@ -16,8 +16,23 @@ summariser that runs server-side with no external API key.
 
 ---
 
+## Live demo
+
+**<https://zoom-clone-six-wine.vercel.app>**
+
+Sign in with a seeded account — `priya@zoomeet.dev` / `password123` — or register your
+own and use the mocked OTP `123456`. To see real peer-to-peer video, open the site in a
+second browser profile as `arjun@zoomeet.dev` and join the same meeting ID.
+
+The backend runs on a free Render instance that sleeps after ~15 minutes idle and takes
+~50 seconds to wake, so the first sign-in after a quiet spell can hang briefly. Load the
+site once before you demo it.
+
+---
+
 ## Table of contents
 
+- [Live demo](#live-demo)
 - [Features](#features)
 - [Tech stack](#tech-stack)
 - [Running it locally](#running-it-locally)
@@ -448,6 +463,8 @@ Set `JWT_SECRET` to something random in any deployment. `CORS_ORIGINS` only matt
 custom domains — every `*.vercel.app` origin is already allowed by `app/main.py`.
 
 ### 2. Frontend (Vercel)
+
+The deployed frontend lives at **<https://zoom-clone-six-wine.vercel.app>**.
 
 In the Vercel project settings:
 
