@@ -6,10 +6,14 @@ import { useCallback, useEffect, useState } from "react";
 import { RecapView } from "@/components/recap/RecapView";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
-import { FullPageSpinner } from "@/components/ui/Spinner";
+import { FullPageSpinner, Spinner } from "@/components/ui/Spinner";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import type { ActionItem, RecordingDetail } from "@/lib/types";
+
+/** How long to wait for a queued recap before telling the reader to retry. */
+const POLL_MS = 3000;
+const MAX_POLLS = 20;
 
 export default function RecordingPage() {
   const { id } = useParams<{ id: string }>();
@@ -19,6 +23,7 @@ export default function RecordingPage() {
   const [recording, setRecording] = useState<RecordingDetail | null>(null);
   const [error, setError] = useState("");
   const [regenerating, setRegenerating] = useState(false);
+  const [polls, setPolls] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +36,20 @@ export default function RecordingPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Stopping a recording only queues the recap, so opening this page straight
+  // after a meeting shows a `processing` recording. Poll until the worker
+  // publishes it, then give up rather than spinning forever on a failed job.
+  const processing = recording?.status === "processing";
+  const givenUp = polls >= MAX_POLLS;
+  useEffect(() => {
+    if (!processing || givenUp) return;
+    const timer = window.setTimeout(() => {
+      setPolls((count) => count + 1);
+      void load();
+    }, POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [processing, givenUp, polls, load]);
 
   async function toggleItem(item: ActionItem) {
     const next = item.status === "done" ? "open" : "done";
@@ -57,6 +76,7 @@ export default function RecordingPage() {
   async function regenerate() {
     if (!recording) return;
     setRegenerating(true);
+    setPolls(0);
     try {
       setRecording(await api.regenerateSummary(recording.id));
       notify({ kind: "success", title: "Recap regenerated" });
@@ -91,6 +111,26 @@ export default function RecordingPage() {
       <button onClick={() => router.push("/recordings")} className="mb-4 flex items-center gap-2 text-sm text-muted transition hover:text-body">
         <Icon name="arrow-left" size={16} /> All AI notes
       </button>
+
+      {processing && (
+        <div className="mb-4 flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-muted">
+          {givenUp ? (
+            <>
+              <Icon name="info" size={16} />
+              <span>
+                The recap is taking longer than expected. Use <strong className="text-body">Regenerate</strong> to
+                build it again.
+              </span>
+            </>
+          ) : (
+            <>
+              <Spinner />
+              <span>Writing up the AI recap — this page updates itself when it is ready.</span>
+            </>
+          )}
+        </div>
+      )}
+
       <RecapView
         recording={recording}
         onToggleItem={toggleItem}

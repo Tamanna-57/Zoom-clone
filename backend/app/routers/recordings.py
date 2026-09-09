@@ -3,15 +3,23 @@
 Recording start/stop is metadata only — no media file is written. Stopping a
 recording is what triggers summarisation: transcript segments are folded into a
 summary, sections and action items by `services.summarizer`.
+
+Summarisation does not happen in the request. `POST /recordings/{id}/stop` marks
+the recording `processing`, queues the work and returns; the worker in
+`services.jobs` generates the recap, flips the status to `ready` and tells the
+meeting over its WebSocket.
 """
 from __future__ import annotations
+
+import asyncio
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .. import schemas
-from ..database import get_db
+from ..database import get_db, session_scope
 from ..deps import get_current_user, get_optional_user
 from ..models import (
     ActionItem,
@@ -30,8 +38,11 @@ from ..models import (
 )
 from ..security import new_share_token
 from ..serializers import recording_detail, recording_out, refresh_talk_time
+from ..services.jobs import jobs
 from ..services.summarizer import summarise
 from ..ws.hub import hub
+
+logger = logging.getLogger("zoomeet.recordings")
 
 router = APIRouter(prefix="/api", tags=["recordings"])
 
@@ -140,10 +151,56 @@ async def start_recording(
     return recording_out(recording)
 
 
+def _build_recap(recording_id: int) -> None:
+    """Worker-thread half of the recap job: summarise and publish.
+
+    Runs on its own session because the request that queued this returned long
+    ago and took its session with it.
+    """
+    db = session_scope()
+    try:
+        recording = db.get(Recording, recording_id)
+        if recording is None:  # deleted while the job sat in the queue
+            return
+        generate_summary(db, recording)
+        refresh_talk_time(db, recording)
+        recording.status = RecordingStatus.ready
+        db.commit()
+    finally:
+        db.close()
+
+
+async def _recap_job(recording_id: int, meeting_code: str, by: str) -> None:
+    """Generate the recap off the request path, then tell the meeting."""
+    try:
+        # The summariser is CPU-bound and the database calls block, so this must
+        # not run inline: the same event loop is serving the meeting sockets.
+        await asyncio.to_thread(_build_recap, recording_id)
+    except Exception:
+        # The recording stays `processing`, which is the truth, and the recap
+        # page offers Regenerate as the way out.
+        logger.exception("Recap generation failed for recording %s", recording_id)
+        await hub.broadcast(
+            meeting_code,
+            {"type": "recording", "state": "failed", "recordingId": recording_id, "by": by},
+        )
+        return
+
+    await hub.broadcast(
+        meeting_code,
+        {"type": "recording", "state": "ready", "recordingId": recording_id, "by": by},
+    )
+
+
 @router.post("/recordings/{recording_id}/stop", response_model=schemas.RecordingDetail)
 async def stop_recording(
     recording_id: int, current: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
+    """Stop recording and queue the recap.
+
+    Returns as soon as the recording is marked `processing`. The recap arrives
+    later: the worker sets the status to `ready` and broadcasts it to the room.
+    """
     recording = _recording(db, recording_id)
     _assert_can_view(recording, current)
     if recording.status != RecordingStatus.recording:
@@ -156,17 +213,20 @@ async def stop_recording(
     )
     recording.status = RecordingStatus.processing
     db.commit()
-
-    generate_summary(db, recording)
-    refresh_talk_time(db, recording)
-    recording.status = RecordingStatus.ready
-    db.commit()
     db.refresh(recording)
 
+    # Read off the ORM objects now: the job runs after this session is closed.
+    meeting_code = recording.meeting.code
+    stopped_by = current.display_name
+    await jobs.enqueue(
+        f"recap:{recording_id}",
+        lambda: _recap_job(recording_id, meeting_code, stopped_by),
+    )
+    # Tells the room the REC indicator can go away, before the recap exists.
     await hub.broadcast(
-        recording.meeting.code,
-        {"type": "recording", "state": "ready", "recordingId": recording.id,
-         "by": current.display_name},
+        meeting_code,
+        {"type": "recording", "state": "processing", "recordingId": recording_id,
+         "by": stopped_by},
     )
     return recording_detail(recording)
 
@@ -179,6 +239,11 @@ def regenerate(
     _assert_can_view(recording, current)
     generate_summary(db, recording)
     refresh_talk_time(db, recording)
+    # Also the recovery path for a recap job that failed: that leaves the
+    # recording `processing`, and a successful rebuild is what makes it ready.
+    if recording.status == RecordingStatus.processing:
+        recording.status = RecordingStatus.ready
+        db.commit()
     db.refresh(recording)
     return recording_detail(recording)
 

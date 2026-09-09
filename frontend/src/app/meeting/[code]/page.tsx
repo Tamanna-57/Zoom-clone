@@ -138,14 +138,21 @@ export default function MeetingPage() {
   );
 
   const handleRecordingChanged = useCallback(
-    (state: "started" | "ready", id: number, by: string) => {
+    (state: "started" | "processing" | "ready" | "failed", id: number, by: string) => {
       if (state === "started") {
         setRecordingId(id);
         recordingStartRef.current = Date.now();
         notify({ kind: "info", title: "Recording started", detail: `${by} started the AI notetaker.` });
-      } else {
-        setRecordingId(null);
+        return;
+      }
+      // Everything else means the recording is over; the recap follows later.
+      setRecordingId(null);
+      if (state === "processing") {
+        notify({ kind: "info", title: "Recording stopped", detail: `${by} stopped it — writing up the recap…` });
+      } else if (state === "ready") {
         notify({ kind: "success", title: "AI recap is ready", detail: "Open AI Notes to read the summary." });
+      } else {
+        notify({ kind: "error", title: "The recap could not be generated", detail: "Open AI Notes and try Regenerate." });
       }
     },
     [notify],
@@ -291,8 +298,9 @@ export default function MeetingPage() {
     const id = recordingId;
     setRecordingId(null);
     try {
+      // Returns as soon as the recap is queued. The room hears about the recap
+      // itself over the socket, which is what raises the toast for everyone.
       await api.stopRecording(id);
-      notify({ kind: "success", title: "AI recap generated", detail: "Find it under AI Notes." });
     } catch {
       notify({ kind: "error", title: "Could not finish the recording" });
     }

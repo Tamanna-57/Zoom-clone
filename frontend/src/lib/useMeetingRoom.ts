@@ -24,7 +24,15 @@ interface Options {
   iceServers: RTCIceServer[];
   enabled: boolean;
   onMeetingEnded: (by: string) => void;
-  onRecordingChanged: (state: "started" | "ready", recordingId: number, by: string) => void;
+  /**
+   * `processing` lands when someone stops the recording — the recap is queued,
+   * not written yet — and `ready`/`failed` when the worker is done with it.
+   */
+  onRecordingChanged: (
+    state: "started" | "processing" | "ready" | "failed",
+    recordingId: number,
+    by: string,
+  ) => void;
   onForceMute: (by: string) => void;
   onRemoved: (participantId: number, by: string) => void;
   /** The same account opened this meeting somewhere else and took the seat. */

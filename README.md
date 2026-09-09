@@ -277,6 +277,7 @@ alembic stamp 0001 && alembic upgrade head
 - `serializers.py` — ORM → schema conversion in one place.
 - `services/summarizer.py` — pure functions, no database and no framework imports.
 - `services/google.py` — Google ID-token verification; the only code that trusts Google.
+- `services/jobs.py` — the background worker; `enqueue()` is the only entry point.
 - `migrations/` — Alembic revisions; the schema is applied from here, never at boot.
 - `ws/hub.py` — connection registry and fan-out; `ws/signaling.py` — the protocol.
 
@@ -380,8 +381,8 @@ All routes are JSON. Authenticated routes take `Authorization: Bearer <token>`.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/api/meetings/{code}/recording/start` | Start recording (idempotent) |
-| POST | `/api/recordings/{id}/stop` | Stop **and generate the recap** |
-| POST | `/api/recordings/{id}/regenerate` | Re-run the summariser |
+| POST | `/api/recordings/{id}/stop` | Stop and **queue** the recap; returns immediately with `status: processing` |
+| POST | `/api/recordings/{id}/regenerate` | Re-run the summariser (also the recovery path for a failed recap job) |
 | GET | `/api/recordings?q=` | List; `q` also searches transcript text |
 | GET | `/api/recordings/{id}` | Full recap: summary, sections, action items, transcript, highlights, talk time |
 | GET | `/api/shared/recordings/{share_token}` | Same payload, **no authentication** |
@@ -419,6 +420,10 @@ over REST, otherwise the socket is closed with `4403`.
 `welcome`, `peer-joined`, `peer-left`, `peer-state`, `signal`, `chat`, `reaction`,
 `transcript`, `recording`, `highlight`, `force-mute`, `removed`, `meeting-ended`.
 
+`recording` carries a `state`: `started`, then `processing` when someone stops it
+(the recap is queued, not written yet), then `ready` — or `failed` if the job could
+not produce a recap, which leaves the recording `processing` for a Regenerate.
+
 The hub is in-process (`ws/hub.py`), which is why the backend runs as a single
 worker. Scaling horizontally means replacing that one class with Redis pub/sub;
 nothing else in the codebase knows how fan-out happens.
@@ -431,7 +436,9 @@ nothing else in the codebase knows how fan-out happens.
    are sent over the socket as `transcript` messages and stored as
    `transcript_segments` attributed to the speaker who sent them — so speaker
    diarisation is exact rather than guessed.
-2. **Summarise.** On stop, `services/summarizer.py` runs over the segments:
+2. **Summarise.** Stopping the recording marks it `processing`, queues the work in
+   `services/jobs.py` and returns — the request never waits for a summary. The worker
+   then runs `services/summarizer.py` over the segments:
    - keyword salience over a stopword-filtered bag of words;
    - sentence scoring (keyword weight + length) for the TL;DR and key points;
    - regex classifiers for **decisions**, **risks/blockers**, **open questions** and
@@ -440,7 +447,14 @@ nothing else in the codebase knows how fan-out happens.
      items, with small-talk filtered out, an assignee resolved from the sentence
      (named person, or the speaker for "I'll"), and a due hint ("by Friday").
 3. **Store.** `summaries`, `summary_sections`, `action_items` are written in one
-   transaction, and `talk_seconds` is rolled up onto each participant.
+   transaction, and `talk_seconds` is rolled up onto each participant. The recording
+   flips to `ready` and the meeting is told over its WebSocket; the recap page polls
+   the same status for anyone who navigated there before the worker finished.
+
+   The queue is in-process, like the WebSocket hub: one worker task, started with the
+   app, running the blocking summariser in a thread so the event loop keeps serving
+   sockets. A job still queued when the process stops is lost, and `regenerate` is the
+   way back. Moving to Celery or RQ means replacing `JobQueue` and nothing else.
 
 `summarise()` is pure — it takes `(speaker, text)` pairs plus the topic and returns a
 `SummaryDraft`. Swapping in an LLM means reimplementing that one function; the
@@ -573,7 +587,7 @@ demoing, or use a paid instance.
 ```bash
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                # 12 tests: registration, password login, Google sign-in
+pytest                # 16 tests: sign-in paths, and the queued-recap flow
 ```
 
 The suite builds its database by running the real Alembic migrations, so a broken
@@ -583,7 +597,11 @@ and expiry checks without calling Google. They cover: a new Google account arriv
 verified; repeat sign-in reusing the account; a Google identity linking to an existing
 password account without dropping its password; password sign-in refused on a
 Google-only account; and rejection of unverified e-mail, wrong audience, wrong issuer,
-expired tokens and unparseable credentials.
+expired tokens and unparseable credentials. The recording tests cover the queued
+recap end to end: `stop` returning `processing` with no summary, the worker publishing
+a `ready` recap with talk time, a failed job broadcasting `failed` and leaving the
+recording `processing` rather than claiming a recap that does not exist, and
+`regenerate` recovering it.
 
 Also checked: `alembic upgrade head` → `alembic check` reports no drift between the
 migrations and `app/models.py`, and `alembic downgrade base` → `upgrade head` round

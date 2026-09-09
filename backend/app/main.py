@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings, warn_about_insecure_defaults
 from .routers import auth, meetings, recordings, users
 from .serializers import ice_servers
+from .services.jobs import jobs
 from .ws import signaling
 
 logger = logging.getLogger("zoomeet")
@@ -17,7 +18,7 @@ logger = logging.getLogger("zoomeet")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Startup checks only.
+    """Startup checks, and the background worker.
 
     The schema is owned by Alembic: run `alembic upgrade head` before starting
     (the Render start command does). Creating tables from the models at boot
@@ -26,7 +27,12 @@ async def lifespan(_: FastAPI):
     """
     for warning in warn_about_insecure_defaults(settings):
         logger.warning(warning)
-    yield
+    # One worker: recap generation is the only job, and it is per-meeting rare.
+    await jobs.start(workers=1)
+    try:
+        yield
+    finally:
+        await jobs.stop()
 
 
 app = FastAPI(
