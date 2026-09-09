@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { AuthLayout } from "@/components/auth/AuthLayout";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { Button } from "@/components/ui/Button";
 import { Field, inputClass } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
@@ -13,19 +14,13 @@ import { useAuth } from "@/lib/auth";
 import { API_URL } from "@/lib/config";
 import { useToast } from "@/lib/toast";
 
-const DEMO_ACCOUNTS = [
-  { email: "priya@zoomeet.dev", name: "Priya Nair", role: "VP Product · hosts most meetings" },
-  { email: "arjun@zoomeet.dev", name: "Arjun Mehta", role: "Staff Engineer" },
-  { email: "dev@zoomeet.dev", name: "Dev Sharma", role: "Design Lead" },
-];
-
 export default function LoginPage() {
   const { signIn, user, loading } = useAuth();
   const router = useRouter();
   const { notify } = useToast();
 
-  const [email, setEmail] = useState("priya@zoomeet.dev");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [misconfigured, setMisconfigured] = useState(false);
@@ -67,7 +62,7 @@ export default function LoginPage() {
       </div>
 
       <h1 className="text-2xl font-bold text-body">Sign in</h1>
-      <p className="mt-1 text-sm text-muted">Use a seeded demo account or your own.</p>
+      <p className="mt-1 text-sm text-muted">Welcome back. Sign in to start or join a meeting.</p>
 
       {misconfigured && (
         <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 p-3 text-xs leading-relaxed text-amber-700">
@@ -112,37 +107,21 @@ export default function LoginPage() {
         </Button>
       </form>
 
-      <p className="mt-4 text-center text-sm text-muted">
+      <GoogleSignInButton
+        text="signin_with"
+        onSignedIn={() => {
+          notify({ kind: "success", title: "Signed in", detail: "Welcome back to Zoomeet." });
+          router.replace("/home");
+        }}
+        onError={setError}
+      />
+
+      <p className="mt-6 text-center text-sm text-muted">
         New here?{" "}
         <Link href="/register" className="font-semibold text-zoom-blue hover:underline">
           Create an account
         </Link>
       </p>
-
-      <div className="mt-8 rounded-xl border border-line bg-surface p-3">
-        <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
-          Seeded accounts · password123
-        </p>
-        <div className="space-y-1">
-          {DEMO_ACCOUNTS.map((account) => (
-            <button
-              key={account.email}
-              type="button"
-              onClick={() => {
-                setEmail(account.email);
-                setPassword("password123");
-              }}
-              className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-left transition hover:bg-surface-2"
-            >
-              <span>
-                <span className="block text-sm font-medium text-body">{account.name}</span>
-                <span className="block text-[11px] text-muted">{account.role}</span>
-              </span>
-              <span className="text-[11px] text-zoom-blue">use</span>
-            </button>
-          ))}
-        </div>
-      </div>
     </AuthLayout>
   );
 }

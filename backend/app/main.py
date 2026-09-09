@@ -1,21 +1,38 @@
 """Zoomeet API — FastAPI application factory."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
-from .database import Base, engine
+from .config import settings, warn_about_insecure_defaults
 from .routers import auth, meetings, recordings, users
 from .serializers import ice_servers
+from .services.jobs import jobs
 from .ws import signaling
+
+logger = logging.getLogger("zoomeet")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
+    """Startup checks, and the background worker.
+
+    The schema is owned by Alembic: run `alembic upgrade head` before starting
+    (the Render start command does). Creating tables from the models at boot
+    cannot apply a change to a database that already exists, which is exactly
+    the case that matters once there is data to keep.
+    """
+    for warning in warn_about_insecure_defaults(settings):
+        logger.warning(warning)
+    # One worker: recap generation is the only job, and it is per-meeting rare.
+    await jobs.start(workers=1)
+    try:
+        yield
+    finally:
+        await jobs.stop()
 
 
 app = FastAPI(
@@ -46,8 +63,16 @@ def health() -> dict:
 
 @app.get("/api/config", tags=["meta"])
 def client_config() -> dict:
-    """Everything the browser needs before joining a call."""
-    return {"iceServers": ice_servers(), "mockOtp": settings.mock_otp}
+    """Everything the browser needs before signing in or joining a call.
+
+    `googleClientId` is served rather than baked into the frontend build so the
+    Google credentials can be rotated without redeploying the frontend.
+    """
+    return {
+        "iceServers": ice_servers(),
+        "mockOtp": settings.mock_otp,
+        "googleClientId": settings.google_client_id,
+    }
 
 
 app.include_router(auth.router)

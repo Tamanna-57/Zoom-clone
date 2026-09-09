@@ -11,8 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 class Settings:
     """Runtime configuration.
 
-    Everything has a working default so `uvicorn app.main:app` runs with no
-    environment set up at all, which is what the README tells a reviewer to do.
+    Local development works with nothing set; every value that must not keep its
+    default in a real deployment (`JWT_SECRET`, `DATABASE_URL`, `GOOGLE_CLIENT_ID`)
+    is listed in `.env.example` and checked by `warn_about_insecure_defaults()`.
     """
 
     def __init__(self) -> None:
@@ -20,7 +21,7 @@ class Settings:
         self.database_url: str = os.getenv(
             "DATABASE_URL", f"sqlite:///{BASE_DIR / 'zoomeet.db'}"
         )
-        self.jwt_secret: str = os.getenv("JWT_SECRET", "dev-secret-change-me")
+        self.jwt_secret: str = os.getenv("JWT_SECRET", DEFAULT_JWT_SECRET)
         self.jwt_algorithm: str = "HS256"
         self.access_token_ttl_minutes: int = int(
             os.getenv("ACCESS_TOKEN_TTL_MINUTES", str(60 * 24 * 7))
@@ -47,6 +48,25 @@ class Settings:
         self.turn_url: str | None = os.getenv("TURN_URL") or None
         self.turn_username: str | None = os.getenv("TURN_USERNAME") or None
         self.turn_credential: str | None = os.getenv("TURN_CREDENTIAL") or None
+        # Google Sign-In. Unset means the button is simply not offered; the
+        # browser reads this id from /api/config, so rotating it needs no rebuild.
+        self.google_client_id: str | None = os.getenv("GOOGLE_CLIENT_ID") or None
+
+
+DEFAULT_JWT_SECRET = "dev-secret-change-me"
+
+
+def warn_about_insecure_defaults(config: Settings) -> list[str]:
+    """Deployment mistakes worth shouting about at startup, not at 3am."""
+    warnings: list[str] = []
+    if config.jwt_secret == DEFAULT_JWT_SECRET:
+        warnings.append(
+            "JWT_SECRET is still the development default — set it to a random value, "
+            "or anyone can mint access tokens for any account."
+        )
+    if not config.google_client_id:
+        warnings.append("GOOGLE_CLIENT_ID is unset — 'Continue with Google' is hidden.")
+    return warnings
 
 
 @lru_cache

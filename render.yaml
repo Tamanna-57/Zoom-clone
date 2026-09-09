@@ -9,10 +9,9 @@ services:
     rootDir: backend
     plan: free
     buildCommand: pip install -r requirements.txt
-    # Seeding is idempotent — it fills an empty database and no-ops otherwise.
-    # A free instance has no persistent disk, so a cold start reseeds the demo
-    # data, which is what you want for a demo and not what you want in prod.
-    startCommand: python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    # Migrations run before the app boots, so a deploy that changes the schema
+    # applies it exactly once and a failed migration stops the release.
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
@@ -23,5 +22,14 @@ services:
       # by the regex in app/main.py, so this is for custom domains).
       - key: CORS_ORIGINS
         value: https://zoom-clone-six-wine.vercel.app
+      # The free plan has no persistent disk: with the default SQLite file every
+      # restart starts an empty database. For real use attach a disk and set
+      # sqlite:////var/data/zoomeet.db, or point this at Postgres.
+      # - key: DATABASE_URL
+      #   sync: false
       - key: MOCK_OTP
         value: "123456"
+      # Google Sign-In client id. Set it in the Render dashboard (or here) to
+      # turn on "Continue with Google"; unset, the button is hidden.
+      - key: GOOGLE_CLIENT_ID
+        sync: false

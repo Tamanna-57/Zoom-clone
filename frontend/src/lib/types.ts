@@ -18,6 +18,14 @@ export interface User {
   last_seen_at: string;
 }
 
+/** `GET /api/config` — what the browser needs before signing in or joining. */
+export interface ClientConfig {
+  iceServers: RTCIceServer[];
+  mockOtp: string;
+  /** null when the backend has no GOOGLE_CLIENT_ID: no Google button is shown. */
+  googleClientId: string | null;
+}
+
 export interface AuthResponse {
   access_token: string;
   token_type: string;
