@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icon";
-import type { PeerInfo } from "@/lib/types";
+import type { PeerInfo, WaitingParticipant } from "@/lib/types";
 
 import { SidePanel } from "./SidePanel";
 
@@ -13,20 +13,27 @@ export function ParticipantsPanel({
   self,
   isHost,
   invited,
+  waiting,
   onClose,
   onMute,
   onRemove,
   onCohost,
+  onAdmit,
+  onDeny,
   onInvite,
 }: {
   peers: PeerInfo[];
   self: PeerInfo | null;
   isHost: boolean;
   invited: { id: number; name: string; color: string }[];
+  /** People the waiting room is holding. Only ever populated for a host. */
+  waiting: WaitingParticipant[];
   onClose: () => void;
   onMute: (participantId: number) => void;
   onRemove: (participantId: number) => void;
   onCohost: (participantId: number) => void;
+  onAdmit: (participantId: number) => void;
+  onDeny: (participantId: number) => void;
   onInvite: () => void;
 }) {
   const [menu, setMenu] = useState<string | null>(null);
@@ -36,7 +43,11 @@ export function ParticipantsPanel({
 
   return (
     <SidePanel
-      title={`Participants (${everyone.length})`}
+      title={
+        isHost && waiting.length > 0
+          ? `Participants (${everyone.length}) · ${waiting.length} waiting`
+          : `Participants (${everyone.length})`
+      }
       onClose={onClose}
       footer={
         <button
@@ -48,6 +59,32 @@ export function ParticipantsPanel({
       }
     >
       <div className="px-2 py-2">
+        {isHost && waiting.length > 0 && (
+          <div className="mb-3 rounded-xl border border-amber-400/30 bg-amber-400/8 p-2">
+            <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
+              Waiting room ({waiting.length})
+            </p>
+            {waiting.map((person) => (
+              <div key={person.participant_id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
+                <Avatar name={person.display_name} color={person.avatar_color} size="sm" online={false} />
+                <span className="min-w-0 flex-1 truncate text-sm text-white">{person.display_name}</span>
+                <button
+                  onClick={() => onAdmit(person.participant_id)}
+                  className="rounded-lg bg-zoom-blue px-2.5 py-1 text-xs font-semibold text-white transition hover:brightness-110"
+                >
+                  Admit
+                </button>
+                <button
+                  onClick={() => onDeny(person.participant_id)}
+                  className="rounded-lg px-2 py-1 text-xs font-semibold text-ink-300 transition hover:bg-white/10 hover:text-white"
+                >
+                  Deny
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {everyone.map((peer) => {
           const isSelf = peer.connectionId === self?.connectionId;
           return (

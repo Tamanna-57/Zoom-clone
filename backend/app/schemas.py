@@ -6,7 +6,13 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
-from .models import ActionItemStatus, MeetingStatus, ParticipantRole, RecordingStatus
+from .models import (
+    ActionItemStatus,
+    AdmissionState,
+    MeetingStatus,
+    ParticipantRole,
+    RecordingStatus,
+)
 
 
 def _assume_utc(value: datetime) -> datetime:
@@ -122,6 +128,7 @@ class ParticipantOut(ORMModel):
     user_id: int | None
     display_name: str
     role: ParticipantRole
+    admission: AdmissionState
     is_online: bool
     is_muted: bool
     is_video_on: bool
@@ -137,6 +144,8 @@ class MeetingOut(ORMModel):
     id: int
     code: str
     topic: str
+    # Only ever filled in for the host, a co-host, or someone already admitted.
+    # Serving it to anyone who knows the meeting id would defeat the passcode.
     passcode: str | None
     status: MeetingStatus
     host: UserPublic
@@ -168,6 +177,18 @@ class JoinResponse(BaseModel):
     participant: ParticipantOut
     ice_servers: list[dict]
     ws_url: str
+    # False while the waiting room holds this person: the browser shows the
+    # "waiting for the host to let you in" screen instead of opening the call.
+    admitted: bool = True
+
+
+class WaitingParticipant(BaseModel):
+    """Someone knocking at the waiting room, as the host's panel sees them."""
+
+    participant_id: int
+    user_id: int | None
+    display_name: str
+    avatar_color: str
 
 
 # --------------------------------------------------------------------------- chat

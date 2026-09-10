@@ -40,6 +40,15 @@ def user_public(user: models.User) -> schemas.UserPublic:
     return schemas.UserPublic.model_validate(user)
 
 
+def waiting_participant(participant: models.Participant) -> schemas.WaitingParticipant:
+    return schemas.WaitingParticipant(
+        participant_id=participant.id,
+        user_id=participant.user_id,
+        display_name=participant.display_name,
+        avatar_color=participant.user.avatar_color if participant.user else "#2D8CFF",
+    )
+
+
 def participant_out(participant: models.Participant) -> schemas.ParticipantOut:
     return schemas.ParticipantOut(
         **_columns(participant),
@@ -47,11 +56,37 @@ def participant_out(participant: models.Participant) -> schemas.ParticipantOut:
     )
 
 
-def meeting_out(meeting: models.Meeting) -> schemas.MeetingOut:
+def can_see_passcode(meeting: models.Meeting, viewer: models.User | None) -> bool:
+    """Who is allowed to read a meeting's passcode.
+
+    The host and co-hosts need it to share the invitation, and anyone already
+    admitted has evidently supplied it. Serving it to every signed-in account
+    that knows the meeting id would make the passcode decorative.
+    """
+    if viewer is None:
+        return False
+    if meeting.host_id == viewer.id:
+        return True
+    return any(
+        p.user_id == viewer.id
+        and (
+            p.role == models.ParticipantRole.cohost
+            or p.admission == models.AdmissionState.admitted
+        )
+        for p in meeting.participants
+    )
+
+
+def meeting_out(
+    meeting: models.Meeting, viewer: models.User | None = None
+) -> schemas.MeetingOut:
     recordings = sorted(meeting.recordings, key=lambda r: r.started_at)
     active = [r for r in recordings if r.status == models.RecordingStatus.recording]
+    columns = _columns(meeting)
+    if not can_see_passcode(meeting, viewer):
+        columns["passcode"] = None
     return schemas.MeetingOut(
-        **_columns(meeting),
+        **columns,
         host=user_public(meeting.host),
         participants=[participant_out(p) for p in meeting.participants],
         invitees=[user_public(i.user) for i in meeting.invitees if i.user],

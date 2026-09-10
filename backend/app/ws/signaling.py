@@ -17,9 +17,11 @@ from sqlalchemy import select
 
 from ..database import session_scope
 from ..models import (
+    AdmissionState,
     ChatMessage,
     Meeting,
     Participant,
+    ParticipantRole,
     Recording,
     RecordingStatus,
     TranscriptSegment,
@@ -35,6 +37,11 @@ router = APIRouter()
 # Sent to the older socket when the same account joins the room again, so the
 # browser can tell "you opened this meeting somewhere else" apart from a drop.
 WS_REPLACED_ELSEWHERE = 4409
+
+# Sent when the socket belongs to someone the waiting room still holds, or whom
+# the host ejected. The browser must not treat either as a dropped connection to
+# retry: one waits for the host, the other is over.
+WS_NOT_ADMITTED = 4403
 
 MEDIA_STATE_FIELDS = {
     "isMuted": "is_muted",
@@ -66,6 +73,11 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
         if participant is None:
             # The REST join endpoint is the front door; refuse sockets without it.
             await websocket.close(code=4403)
+            return
+        if participant.admission != AdmissionState.admitted:
+            # Waiting room or ejected: either way this person is not in the room
+            # yet, and must not receive its media, chat or transcript.
+            await websocket.close(code=WS_NOT_ADMITTED)
             return
 
         participant.is_online = True
@@ -108,6 +120,20 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 await hub.remove(meeting.code, previous.id)
 
         room = hub.room(meeting.code)
+        # A host who joins (or reloads) mid-call needs the current knock list;
+        # the waiting-room broadcasts only cover people who arrive afterwards.
+        waiting = []
+        if participant.role in (ParticipantRole.host, ParticipantRole.cohost):
+            waiting = [
+                {
+                    "participant_id": p.id,
+                    "user_id": p.user_id,
+                    "display_name": p.display_name,
+                    "avatar_color": p.user.avatar_color if p.user else "#2D8CFF",
+                }
+                for p in meeting.participants
+                if p.admission == AdmissionState.waiting
+            ]
         await websocket.send_json(
             {
                 "type": "welcome",
@@ -116,6 +142,7 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 # Whoever joins late still needs the board and the open ballots.
                 "whiteboard": list(room.strokes) if room else [],
                 "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
+                "waiting": waiting,
             }
         )
         # Existing peers create the offer; the newcomer answers. One offerer per

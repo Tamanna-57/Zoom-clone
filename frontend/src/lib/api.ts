@@ -11,6 +11,7 @@ import type {
   Recording,
   RecordingDetail,
   User,
+  WaitingParticipant,
 } from "./types";
 
 const TOKEN_KEY = "zoomeet.token";
@@ -132,6 +133,11 @@ export const api = {
     post<void>(`/api/meetings/${code}/participants/${participantId}/remove`),
   toggleCohost: (code: string, participantId: number) =>
     post<Participant>(`/api/meetings/${code}/participants/${participantId}/cohost`),
+  waitingRoom: (code: string) => get<WaitingParticipant[]>(`/api/meetings/${code}/waiting`),
+  admitParticipant: (code: string, participantId: number) =>
+    post<Participant>(`/api/meetings/${code}/participants/${participantId}/admit`),
+  denyParticipant: (code: string, participantId: number) =>
+    post<void>(`/api/meetings/${code}/participants/${participantId}/deny`),
 
   // chat ---------------------------------------------------------------------
   messages: (code: string) => get<ChatMessage[]>(`/api/meetings/${code}/messages`),

@@ -124,6 +124,19 @@ class Hub:
         """
         return [c for c in self.peers(meeting_code, exclude=exclude) if c.user_id == user_id]
 
+    async def close_user(self, meeting_code: str, user_id: int, code: int = 1000) -> None:
+        """Hang up every socket a user holds in a room.
+
+        A host ejecting someone has to actually cut the connection: telling the
+        browser it was removed and trusting it to leave is not a control.
+        """
+        for connection in self.connections_for_user(meeting_code, user_id):
+            try:
+                await connection.websocket.close(code=code)
+            except Exception:  # pragma: no cover - socket already gone
+                pass
+            await self.remove(meeting_code, connection.id)
+
     async def send_to(self, meeting_code: str, connection_id: str, payload: dict) -> None:
         connection = self.get(meeting_code, connection_id)
         if connection is None:
