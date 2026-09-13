@@ -15,7 +15,7 @@ import { Whiteboard } from "@/components/meeting/Whiteboard";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
-import { FullPageSpinner } from "@/components/ui/Spinner";
+import { FullPageSpinner, Spinner } from "@/components/ui/Spinner";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { formatDuration, formatMeetingId } from "@/lib/format";
@@ -25,7 +25,7 @@ import { useToast } from "@/lib/toast";
 import { useMeetingRoom } from "@/lib/useMeetingRoom";
 import type { JoinResponse, Meeting } from "@/lib/types";
 
-type Phase = "loading" | "prejoin" | "live" | "over";
+type Phase = "loading" | "prejoin" | "waiting" | "live" | "over";
 type Panel = "chat" | "people" | "notes" | "whiteboard" | "polls" | null;
 
 /** One video square: the local camera or one remote peer. */
@@ -177,6 +177,14 @@ export default function MeetingPage() {
     [joinData, notify],
   );
 
+  const handleAdmitted = useCallback(
+    (by: string) => {
+      setPhase("live");
+      notify({ kind: "success", title: "You're in", detail: `${by} let you into the meeting.` });
+    },
+    [notify],
+  );
+
   const handleReplaced = useCallback(() => {
     notify({
       kind: "error",
@@ -196,6 +204,7 @@ export default function MeetingPage() {
     onRecordingChanged: handleRecordingChanged,
     onForceMute: handleForceMute,
     onRemoved: handleRemoved,
+    onAdmitted: handleAdmitted,
     onReplaced: handleReplaced,
     selfParticipantId: joinData?.participant.id ?? null,
   });
@@ -241,6 +250,35 @@ export default function MeetingPage() {
     }
   }, [room.messages.length, panel]);
 
+  // Someone in the waiting room holds no meeting socket — the server refuses it
+  // until they are admitted — so the browser asks the join endpoint instead.
+  // The host's decision lands within a few seconds either way.
+  useEffect(() => {
+    if (phase !== "waiting") return;
+    let cancelled = false;
+    const poll = window.setInterval(async () => {
+      try {
+        const response = await api.joinMeeting(code, { passcode: passcode || undefined });
+        if (cancelled || !response.admitted) return;
+        setJoinData(response);
+        setMeeting(response.meeting);
+        setPhase("live");
+        notify({ kind: "success", title: "You're in", detail: "The host let you into the meeting." });
+      } catch (caught) {
+        if (cancelled) return;
+        // 403 here means the host denied entry rather than kept us waiting.
+        cancelled = true;
+        setEndedBy(null);
+        setLoadError(caught instanceof Error ? caught.message : "You could not join this meeting");
+        setPhase("over");
+      }
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
+  }, [phase, code, passcode, notify]);
+
   // Call timer.
   useEffect(() => {
     if (phase !== "live") return;
@@ -263,6 +301,12 @@ export default function MeetingPage() {
       const response = await api.joinMeeting(code, { passcode: passcode || undefined });
       setJoinData(response);
       setMeeting(response.meeting);
+      if (!response.admitted) {
+        // The host has to let this person in; the socket would be refused until
+        // they do, so nothing else in the join sequence should run yet.
+        setPhase("waiting");
+        return;
+      }
       setPhase("live");
 
       const history = await api.messages(code).catch(() => []);
@@ -438,6 +482,29 @@ export default function MeetingPage() {
     );
   }
 
+  if (phase === "waiting") {
+    return (
+      <div className="grid min-h-screen place-items-center bg-ink-950 px-4 text-center text-white">
+        <div className="max-w-sm">
+          <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-white/8">
+            <Icon name="clock" size={28} />
+          </span>
+          <h1 className="mt-5 text-xl font-bold">Waiting for the host to let you in</h1>
+          <p className="mt-2 text-sm text-ink-300">
+            {meeting?.host.display_name} has turned on the waiting room for “{meeting?.topic}”.
+            You&apos;ll join automatically once they admit you.
+          </p>
+          <div className="mt-6 flex items-center justify-center gap-2 text-xs text-ink-300">
+            <Spinner /> Knocking…
+          </div>
+          <Button variant="secondary" className="mt-6" onClick={() => void leave()}>
+            Leave
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (phase === "prejoin") {
     return (
       <PreJoin
@@ -596,6 +663,9 @@ export default function MeetingPage() {
                   name: person.display_name,
                   color: person.avatar_color,
                 }))}
+                waiting={room.waiting}
+                onAdmit={(id) => void api.admitParticipant(code, id)}
+                onDeny={(id) => void api.denyParticipant(code, id)}
                 onClose={() => setPanel(null)}
                 onMute={(id) => void api.muteParticipant(code, id)}
                 onRemove={(id) => void api.removeParticipant(code, id)}

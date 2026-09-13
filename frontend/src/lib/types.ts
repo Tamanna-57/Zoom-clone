@@ -2,6 +2,8 @@
 
 export type MeetingStatus = "scheduled" | "live" | "ended";
 export type ParticipantRole = "host" | "cohost" | "participant";
+/** Whether someone may actually be in the room, or is held at the door. */
+export type AdmissionState = "admitted" | "waiting" | "removed";
 export type RecordingStatus = "recording" | "processing" | "ready";
 export type ActionItemStatus = "open" | "done";
 
@@ -43,6 +45,7 @@ export interface Participant {
   user_id: number | null;
   display_name: string;
   role: ParticipantRole;
+  admission: AdmissionState;
   is_online: boolean;
   is_muted: boolean;
   is_video_on: boolean;
@@ -84,6 +87,16 @@ export interface JoinResponse {
   participant: Participant;
   ice_servers: RTCIceServer[];
   ws_url: string;
+  /** False while the waiting room holds this person. */
+  admitted: boolean;
+}
+
+/** Someone knocking at the waiting room, as the host's panel sees them. */
+export interface WaitingParticipant {
+  participant_id: number;
+  user_id: number | null;
+  display_name: string;
+  avatar_color: string;
 }
 
 export interface ChatMessage {
@@ -207,7 +220,9 @@ export interface Poll {
 }
 
 export type ServerEvent =
-  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; whiteboard?: Stroke[]; polls?: Poll[] }
+  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; whiteboard?: Stroke[]; polls?: Poll[]; waiting?: WaitingParticipant[] }
+  | { type: "waiting-room"; waiting: WaitingParticipant[] }
+  | { type: "admitted"; participantId: number; by: string }
   | { type: "whiteboard"; action: "stroke"; stroke: Stroke }
   | { type: "whiteboard"; action: "clear" }
   | { type: "poll"; poll: Poll }
@@ -218,7 +233,7 @@ export type ServerEvent =
   | { type: "chat"; message: ChatMessage }
   | { type: "reaction"; connectionId: string; displayName: string; emoji: string }
   | { type: "transcript"; segment: { id: number; speakerId: number | null; speakerName: string; startMs: number; endMs: number; text: string } }
-  | { type: "recording"; state: "started" | "ready"; recordingId: number; by: string }
+  | { type: "recording"; state: "started" | "processing" | "ready" | "failed"; recordingId: number; by: string }
   | { type: "highlight"; by: string; atMs: number }
   | { type: "force-mute"; participantId: number; by: string }
   | { type: "removed"; participantId: number; by: string }

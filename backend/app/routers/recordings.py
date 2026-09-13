@@ -24,10 +24,12 @@ from ..deps import get_current_user, get_optional_user
 from ..models import (
     ActionItem,
     ActionItemStatus,
+    AdmissionState,
     Highlight,
     Invitee,
     Meeting,
     Participant,
+    ParticipantRole,
     Recording,
     RecordingStatus,
     Summary,
@@ -59,6 +61,24 @@ def _recording(db: Session, recording_id: int) -> Recording:
     if recording is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recording not found")
     return recording
+
+
+def _assert_can_record(meeting: Meeting, user: User) -> None:
+    """Recording is a host control in Zoom, not something any attendee can flip.
+
+    It also has to be *someone in the meeting*: without this, knowing a meeting
+    id was enough to start a recording on a stranger's call.
+    """
+    cohost_ids = {
+        p.user_id
+        for p in meeting.participants
+        if p.role == ParticipantRole.cohost
+        and p.admission == AdmissionState.admitted
+    }
+    if meeting.host_id != user.id and user.id not in cohost_ids:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the host can start or stop the recording"
+        )
 
 
 def _assert_can_view(recording: Recording, user: User) -> None:
@@ -126,6 +146,7 @@ async def start_recording(
     code: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     meeting = _meeting(db, code)
+    _assert_can_record(meeting, current)
     active = db.scalar(
         select(Recording).where(
             Recording.meeting_id == meeting.id, Recording.status == RecordingStatus.recording
@@ -202,7 +223,7 @@ async def stop_recording(
     later: the worker sets the status to `ready` and broadcasts it to the room.
     """
     recording = _recording(db, recording_id)
-    _assert_can_view(recording, current)
+    _assert_can_record(recording.meeting, current)
     if recording.status != RecordingStatus.recording:
         return recording_detail(recording)
 

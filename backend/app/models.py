@@ -47,6 +47,20 @@ class ParticipantRole(str, enum.Enum):
     participant = "participant"
 
 
+class AdmissionState(str, enum.Enum):
+    """Whether a participant may actually be in the room.
+
+    `waiting` is Zoom's waiting room: the person has passed the passcode but the
+    host has not let them in yet. `removed` is a host ejection, which in Zoom is
+    also a ban for the rest of the meeting rather than a kick they can undo by
+    clicking the link again.
+    """
+
+    admitted = "admitted"
+    waiting = "waiting"
+    removed = "removed"
+
+
 class RecordingStatus(str, enum.Enum):
     recording = "recording"
     processing = "processing"
@@ -176,6 +190,9 @@ class Participant(Base):
     display_name: Mapped[str] = mapped_column(String(120))
     role: Mapped[ParticipantRole] = mapped_column(
         Enum(ParticipantRole), default=ParticipantRole.participant
+    )
+    admission: Mapped[AdmissionState] = mapped_column(
+        Enum(AdmissionState), default=AdmissionState.admitted, index=True
     )
     is_online: Mapped[bool] = mapped_column(Boolean, default=False)
     is_muted: Mapped[bool] = mapped_column(Boolean, default=True)

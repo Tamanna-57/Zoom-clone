@@ -35,13 +35,29 @@ interface Options {
   ) => void;
   onForceMute: (by: string) => void;
   onRemoved: (participantId: number, by: string) => void;
+  /** The host let this person out of the waiting room and into the call. */
+  onAdmitted: (by: string) => void;
   /** The same account opened this meeting somewhere else and took the seat. */
   onReplaced: () => void;
   selfParticipantId: number | null;
 }
 
+export interface WaitingKnock {
+  participant_id: number;
+  user_id: number | null;
+  display_name: string;
+  avatar_color: string;
+}
+
 /** Close code the server uses when a newer socket for this account supersedes us. */
 const WS_REPLACED_ELSEWHERE = 4409;
+/** The waiting room still holds this person, or the host ejected them. */
+const WS_NOT_ADMITTED = 4403;
+/** A normal `socket.close()` from our own cleanup — never worth retrying. */
+const WS_NORMAL = 1000;
+
+/** Backoff between reconnect attempts, in ms. The last value repeats. */
+const RETRY_DELAYS = [500, 1_000, 2_000, 4_000, 8_000, 15_000];
 
 /**
  * One mesh call.
@@ -59,6 +75,7 @@ export function useMeetingRoom({
   onRecordingChanged,
   onForceMute,
   onRemoved,
+  onAdmitted,
   onReplaced,
   selfParticipantId,
 }: Options) {
@@ -70,17 +87,28 @@ export function useMeetingRoom({
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
+  const [waiting, setWaiting] = useState<WaitingKnock[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
+  // Reconnect bookkeeping. A dropped socket is the normal case on a flaky
+  // network, so the call has to climb back by itself instead of sitting on
+  // "reconnecting…" until the user reloads the page.
+  const retryTimerRef = useRef<number | null>(null);
+  const retryCountRef = useRef(0);
   const connectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const streamRef = useRef<MediaStream | null>(null);
+  // The video track actually being sent right now: the camera normally, the
+  // display capture while screen sharing. `replaceTrack` only rewires senders
+  // that already exist, so without this a peer who joins mid-presentation is
+  // offered the camera and never sees the shared screen.
+  const outgoingVideoRef = useRef<MediaStreamTrack | null>(null);
   // A track can arrive before the roster entry it belongs to. Park it here so a
   // late peer record still gets its video instead of rendering a frozen avatar.
   const pendingStreamsRef = useRef<Map<string, MediaStream>>(new Map());
 
   // Callbacks live in a ref so the socket effect never re-subscribes on rerender.
-  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId });
+  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId });
   // Offering is defined after the connection factory that needs it.
   const offerRef = useRef<(connectionId: string) => Promise<void>>(async () => undefined);
 
@@ -89,8 +117,8 @@ export function useMeetingRoom({
   }, [localStream]);
 
   useEffect(() => {
-    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId };
-  }, [onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onReplaced, selfParticipantId]);
+    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId };
+  }, [onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId]);
 
   const send = useCallback((payload: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -115,7 +143,10 @@ export function useMeetingRoom({
 
       const stream = streamRef.current;
       if (stream) {
-        stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+        const shared = outgoingVideoRef.current;
+        stream.getAudioTracks().forEach((track) => connection.addTrack(track, stream));
+        const video = shared ?? stream.getVideoTracks()[0];
+        if (video) connection.addTrack(video, stream);
       } else {
         // View-only participant: still negotiate two receiving transceivers.
         connection.addTransceiver("video", { direction: "recvonly" });
@@ -223,31 +254,81 @@ export function useMeetingRoom({
     const token = getToken();
     if (!token) return;
 
-    const socket = new WebSocket(`${WS_URL}/ws/meetings/${code}?token=${token}`);
-    socketRef.current = socket;
+    // `stopped` is the difference between "we are leaving" and "the network
+    // blinked": only the latter should be retried.
+    let stopped = false;
 
-    socket.onopen = () => setConnected(true);
-    socket.onclose = (event) => {
-      setConnected(false);
-      if (event.code === WS_REPLACED_ELSEWHERE) handlersRef.current.onReplaced();
+    const scheduleRetry = () => {
+      if (stopped || retryTimerRef.current !== null) return;
+      const delay = RETRY_DELAYS[Math.min(retryCountRef.current, RETRY_DELAYS.length - 1)];
+      retryCountRef.current += 1;
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null;
+        connect();
+      }, delay);
     };
 
-    socket.onmessage = (event) => {
+    function connect() {
+      if (stopped) return;
+      const socket = new WebSocket(`${WS_URL}/ws/meetings/${code}?token=${token}`);
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        retryCountRef.current = 0;
+        setConnected(true);
+      };
+      socket.onclose = (event) => {
+        setConnected(false);
+        if (socketRef.current === socket) socketRef.current = null;
+        if (event.code === WS_REPLACED_ELSEWHERE) {
+          // Another tab took the seat: reconnecting would just fight it.
+          stopped = true;
+          handlersRef.current.onReplaced();
+          return;
+        }
+        if (event.code === WS_NOT_ADMITTED || event.code === WS_NORMAL) {
+          stopped = true;
+          return;
+        }
+        scheduleRetry();
+      };
+      // An error is always followed by `onclose`, which is where retrying lives.
+      socket.onerror = () => undefined;
+
+      socket.onmessage = (event) => {
       const message = JSON.parse(event.data as string) as ServerEvent;
 
       switch (message.type) {
         case "welcome": {
+          // A reconnect gets a brand-new connection id, and so does everyone
+          // else's view of us. Every peer connection from the previous socket
+          // is addressed to ids that no longer exist, so start the mesh over.
+          connectionsRef.current.forEach((connection) => connection.close());
+          connectionsRef.current.clear();
+          pendingIceRef.current.clear();
+          pendingStreamsRef.current.clear();
+
           setSelf(message.self);
           setPeers(
             Object.fromEntries(
-              message.peers.map((peer) => [
-                peer.connectionId,
-                { ...peer, stream: pendingStreamsRef.current.get(peer.connectionId) ?? null },
-              ]),
+              message.peers.map((peer) => [peer.connectionId, { ...peer, stream: null }]),
             ),
           );
           setStrokes(message.whiteboard ?? []);
           setPolls(message.polls ?? []);
+          setWaiting(message.waiting ?? []);
+          // The peers who were already here offer to the newcomer, so there is
+          // nothing to send: answering their offers rebuilds every pair.
+          break;
+        }
+        case "waiting-room": {
+          setWaiting(message.waiting);
+          break;
+        }
+        case "admitted": {
+          if (message.participantId === handlersRef.current.selfParticipantId) {
+            handlersRef.current.onAdmitted(message.by);
+          }
           break;
         }
         case "peer-joined": {
@@ -343,7 +424,10 @@ export function useMeetingRoom({
         default:
           break;
       }
-    };
+      };
+    }
+
+    connect();
 
     // Some proxies drop idle sockets; a slow heartbeat keeps the call alive.
     const heartbeat = window.setInterval(() => send({ type: "ping" }), 25_000);
@@ -353,8 +437,14 @@ export function useMeetingRoom({
     const pendingStreams = pendingStreamsRef.current;
 
     return () => {
+      stopped = true;
       window.clearInterval(heartbeat);
-      socket.close();
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      retryCountRef.current = 0;
+      socketRef.current?.close();
       socketRef.current = null;
       connections.forEach((connection) => connection.close());
       connections.clear();
@@ -363,12 +453,16 @@ export function useMeetingRoom({
       setPeers({});
       setStrokes([]);
       setPolls([]);
+      setWaiting([]);
       setConnected(false);
     };
   }, [code, enabled, closeConnection, handleSignal, offerTo, send]);
 
   /** Swap the outgoing video (camera <-> screen) without renegotiating. */
   const replaceVideoTrack = useCallback((track: MediaStreamTrack | null) => {
+    // Remembered so peers that connect *after* this point are given the same
+    // track, rather than whatever the camera happens to be sending.
+    outgoingVideoRef.current = track;
     connectionsRef.current.forEach((connection) => {
       const sender = connection.getSenders().find((candidate) => candidate.track?.kind === "video");
       if (sender) void sender.replaceTrack(track);
@@ -398,5 +492,5 @@ export function useMeetingRoom({
     [send, replaceVideoTrack],
   );
 
-  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, ...api };
+  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, waiting, ...api };
 }

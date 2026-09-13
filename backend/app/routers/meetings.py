@@ -11,6 +11,7 @@ from .. import schemas
 from ..database import get_db
 from ..deps import get_current_user
 from ..models import (
+    AdmissionState,
     ChatMessage,
     Invitee,
     Meeting,
@@ -21,8 +22,12 @@ from ..models import (
     utcnow,
 )
 from ..security import new_meeting_code, new_passcode
-from ..serializers import ice_servers, meeting_out, participant_out
+from ..serializers import ice_servers, meeting_out, participant_out, waiting_participant
 from ..ws.hub import hub
+
+# Close code the meeting socket uses when the host ejects someone, so the
+# browser shows "you were removed" rather than trying to reconnect.
+WS_REMOVED = 4403
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
@@ -34,6 +39,31 @@ def _load(db: Session, code_or_id: str) -> Meeting:
     if meeting is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Meeting not found")
     return meeting
+
+
+def _host_user_ids(meeting: Meeting) -> set[int]:
+    """The host plus every co-host — who may run the waiting room."""
+    ids = {meeting.host_id}
+    ids |= {
+        p.user_id
+        for p in meeting.participants
+        if p.role == ParticipantRole.cohost and p.user_id is not None
+    }
+    return ids
+
+
+async def _announce_waiting_room(meeting: Meeting) -> None:
+    """Push the current knock list to the hosts' participant panels."""
+    waiting = [
+        waiting_participant(p)
+        for p in meeting.participants
+        if p.admission == AdmissionState.waiting
+    ]
+    await hub.broadcast(
+        meeting.code,
+        {"type": "waiting-room", "waiting": [w.model_dump() for w in waiting]},
+        only_user_ids=_host_user_ids(meeting),
+    )
 
 
 def _require_host(meeting: Meeting, user: User) -> None:
@@ -85,7 +115,7 @@ def create_meeting(
 
     db.commit()
     db.refresh(meeting)
-    return meeting_out(meeting)
+    return meeting_out(meeting, current)
 
 
 @router.get("", response_model=list[schemas.MeetingOut])
@@ -114,7 +144,7 @@ def list_meetings(
         meetings = [m for m in meetings if m.status == MeetingStatus.live]
     else:
         meetings.sort(key=lambda m: m.created_at, reverse=True)
-    return [meeting_out(m) for m in meetings]
+    return [meeting_out(m, current) for m in meetings]
 
 
 @router.get("/personal", response_model=schemas.MeetingOut)
@@ -135,12 +165,14 @@ def personal_room(current: User = Depends(get_current_user), db: Session = Depen
         db.add(meeting)
         db.commit()
         db.refresh(meeting)
-    return meeting_out(meeting)
+    return meeting_out(meeting, current)
 
 
 @router.get("/{code}", response_model=schemas.MeetingOut)
-def get_meeting(code: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return meeting_out(_load(db, code))
+def get_meeting(
+    code: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    return meeting_out(_load(db, code), current)
 
 
 @router.patch("/{code}", response_model=schemas.MeetingOut)
@@ -157,7 +189,7 @@ def update_meeting(
             setattr(meeting, field, value)
     db.commit()
     db.refresh(meeting)
-    return meeting_out(meeting)
+    return meeting_out(meeting, current)
 
 
 @router.delete("/{code}", status_code=204)
@@ -174,7 +206,7 @@ def delete_meeting(
 
 
 @router.post("/{code}/join", response_model=schemas.JoinResponse)
-def join_meeting(
+async def join_meeting(
     code: str,
     payload: schemas.JoinRequest,
     current: User = Depends(get_current_user),
@@ -192,6 +224,13 @@ def join_meeting(
             Participant.meeting_id == meeting.id, Participant.user_id == current.id
         )
     )
+    if participant is not None and participant.admission == AdmissionState.removed:
+        # Zoom keeps an ejected attendee out for the rest of the meeting; a
+        # removal that the person can undo by re-opening the link is not one.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "The host removed you from this meeting"
+        )
+
     if participant is None:
         participant = Participant(
             meeting_id=meeting.id,
@@ -201,24 +240,42 @@ def join_meeting(
         )
         db.add(participant)
 
-    participant.joined_at = participant.joined_at or utcnow()
+    # The waiting room holds everyone except the host and co-hosts, who are the
+    # people who run it. Someone already admitted stays admitted on a rejoin.
+    is_host_side = meeting.host_id == current.id or participant.role in (
+        ParticipantRole.host,
+        ParticipantRole.cohost,
+    )
+    if meeting.waiting_room and not is_host_side:
+        if participant.admission != AdmissionState.admitted:
+            participant.admission = AdmissionState.waiting
+    else:
+        participant.admission = AdmissionState.admitted
+
     participant.left_at = None
     participant.is_muted = meeting.mute_on_entry and meeting.host_id != current.id
     participant.is_video_on = meeting.video_on_entry
 
-    if meeting.status == MeetingStatus.scheduled:
-        meeting.status = MeetingStatus.live
-        meeting.started_at = meeting.started_at or utcnow()
+    admitted = participant.admission == AdmissionState.admitted
+    if admitted:
+        participant.joined_at = participant.joined_at or utcnow()
+        if meeting.status == MeetingStatus.scheduled:
+            meeting.status = MeetingStatus.live
+            meeting.started_at = meeting.started_at or utcnow()
 
     db.commit()
     db.refresh(meeting)
     db.refresh(participant)
 
+    if not admitted:
+        await _announce_waiting_room(meeting)
+
     return schemas.JoinResponse(
-        meeting=meeting_out(meeting),
+        meeting=meeting_out(meeting, current),
         participant=participant_out(participant),
         ice_servers=ice_servers(),
         ws_url=f"/ws/meetings/{meeting.code}",
+        admitted=admitted,
     )
 
 
@@ -252,7 +309,7 @@ async def end_meeting(
     db.commit()
     db.refresh(meeting)
     await hub.broadcast(meeting.code, {"type": "meeting-ended", "by": current.display_name})
-    return meeting_out(meeting)
+    return meeting_out(meeting, current)
 
 
 # ------------------------------------------------------------------ host controls
@@ -271,6 +328,14 @@ async def mute_participant(
     participant.is_muted = True
     db.commit()
     db.refresh(participant)
+    # Keep the socket's own view in step: it is what gates the transcript, and
+    # what other participants' tiles are drawn from.
+    if participant.user_id is not None:
+        for connection in hub.connections_for_user(meeting.code, participant.user_id):
+            connection.is_muted = True
+            await hub.broadcast(
+                meeting.code, {"type": "peer-state", "peer": connection.peer_payload()}
+            )
     await hub.broadcast(
         meeting.code,
         {"type": "force-mute", "participantId": participant.id, "by": current.display_name},
@@ -294,11 +359,95 @@ async def remove_participant(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "The host cannot be removed")
     participant.is_online = False
     participant.left_at = utcnow()
+    participant.admission = AdmissionState.removed
     db.commit()
     await hub.broadcast(
         meeting.code,
         {"type": "removed", "participantId": participant.id, "by": current.display_name},
     )
+    # Say it first, then actually hang up on them.
+    if participant.user_id is not None:
+        await hub.close_user(meeting.code, participant.user_id, code=WS_REMOVED)
+
+
+# ------------------------------------------------------------------ waiting room
+@router.get("/{code}/waiting", response_model=list[schemas.WaitingParticipant])
+def list_waiting(
+    code: str, current: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    """Who is knocking. Hosts only — the queue is not attendees' business."""
+    meeting = _load(db, code)
+    _require_host(meeting, current)
+    return [
+        waiting_participant(p)
+        for p in meeting.participants
+        if p.admission == AdmissionState.waiting
+    ]
+
+
+def _waiting_participant_or_404(
+    db: Session, meeting: Meeting, participant_id: int
+) -> Participant:
+    participant = db.get(Participant, participant_id)
+    if participant is None or participant.meeting_id != meeting.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Participant not found")
+    if participant.admission != AdmissionState.waiting:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That person is not in the waiting room"
+        )
+    return participant
+
+
+@router.post("/{code}/participants/{participant_id}/admit", response_model=schemas.ParticipantOut)
+async def admit_participant(
+    code: str,
+    participant_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    meeting = _load(db, code)
+    _require_host(meeting, current)
+    participant = _waiting_participant_or_404(db, meeting, participant_id)
+
+    participant.admission = AdmissionState.admitted
+    participant.joined_at = participant.joined_at or utcnow()
+    if meeting.status == MeetingStatus.scheduled:
+        meeting.status = MeetingStatus.live
+        meeting.started_at = meeting.started_at or utcnow()
+    db.commit()
+    db.refresh(participant)
+
+    await hub.broadcast(
+        meeting.code,
+        {"type": "admitted", "participantId": participant.id, "by": current.display_name},
+    )
+    await _announce_waiting_room(meeting)
+    return participant_out(participant)
+
+
+@router.post("/{code}/participants/{participant_id}/deny", status_code=204)
+async def deny_participant(
+    code: str,
+    participant_id: int,
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Turn someone away at the door. In Zoom this also keeps them out."""
+    meeting = _load(db, code)
+    _require_host(meeting, current)
+    participant = _waiting_participant_or_404(db, meeting, participant_id)
+
+    participant.admission = AdmissionState.removed
+    participant.left_at = utcnow()
+    db.commit()
+
+    await hub.broadcast(
+        meeting.code,
+        {"type": "removed", "participantId": participant.id, "by": current.display_name},
+    )
+    if participant.user_id is not None:
+        await hub.close_user(meeting.code, participant.user_id, code=WS_REMOVED)
+    await _announce_waiting_room(meeting)
 
 
 @router.post("/{code}/participants/{participant_id}/cohost", response_model=schemas.ParticipantOut)
@@ -339,7 +488,7 @@ def invite_users(
             db.add(Invitee(meeting_id=meeting.id, user_id=user_id))
     db.commit()
     db.refresh(meeting)
-    return meeting_out(meeting)
+    return meeting_out(meeting, current)
 
 
 # ------------------------------------------------------------------- in-call chat
