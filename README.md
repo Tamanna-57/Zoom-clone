@@ -100,8 +100,9 @@ site once before you demo it.
 ### Polish
 - Light and dark theme (meetings are always dark, like the Zoom client).
 - Toasts, modals, empty states, loading states, responsive layout.
-- "Coming soon" placeholders for breakout rooms, whiteboard, polls, virtual
-  backgrounds, live streaming and linked devices.
+- Shared whiteboard and live polls, replayed to anyone who joins late.
+- "Coming soon" placeholders for breakout rooms, virtual backgrounds, live
+  streaming and linked devices.
 
 ---
 
@@ -216,7 +217,7 @@ alembic current                                        # what is applied right n
 
 | Revision | What it does |
 | --- | --- |
-| `0001` | The initial schema — eleven tables. |
+| `0001` | The initial schema — twelve tables. |
 | `0002` | Google Sign-In: `users.google_sub`, and `users.password_hash` becomes nullable. |
 
 `migrations/env.py` reads `DATABASE_URL` from the application settings, so migrations
@@ -294,7 +295,7 @@ alembic stamp 0001 && alembic upgrade head
 
 ## Database schema
 
-Eleven tables. `→` is a foreign key.
+Twelve tables. `→` is a foreign key.
 
 ```
 users ─┬─< contacts (owner_id →users, contact_id →users, starred)
@@ -478,8 +479,9 @@ Per the brief, these are deliberately simulated:
 - **Waiting room** — the flag is stored and shown, but admission is not enforced.
 - **Presence** — derived from `last_seen_at` (two-minute window) and live socket
   membership, not a dedicated presence service.
-- **Coming soon** — breakout rooms, whiteboard, polls, virtual backgrounds, live
-  streaming, linked devices.
+- **Coming soon** — breakout rooms, virtual backgrounds, live streaming, linked
+  devices. (The whiteboard and polls *are* built; they live in the room's memory
+  for the duration of the call and are not persisted.)
 
 ---
 
@@ -587,7 +589,7 @@ demoing, or use a paid instance.
 ```bash
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                # 16 tests: sign-in paths, and the queued-recap flow
+pytest                # 32 tests: sign-in, meetings and host controls, the queued recap
 ```
 
 The suite builds its database by running the real Alembic migrations, so a broken
