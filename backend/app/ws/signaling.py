@@ -294,6 +294,11 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
             return
         action = message.get("action")
         if action == "clear":
+            # Same rule as the polls below. The UI hides this from participants,
+            # but hiding a button proves nothing: anyone could send this message
+            # straight down the socket and wipe the board mid-meeting.
+            if connection.role == "participant":
+                return
             room.strokes.clear()
             await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "clear"})
             return
