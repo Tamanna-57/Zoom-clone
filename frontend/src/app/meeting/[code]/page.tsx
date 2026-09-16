@@ -32,6 +32,7 @@ type Panel = "chat" | "people" | "notes" | "whiteboard" | "polls" | null;
 interface Tile {
   id: string;
   stream: MediaStream | null;
+  streamRevision?: number;
   name: string;
   color: string;
   isMuted: boolean;
@@ -542,6 +543,7 @@ export default function MeetingPage() {
     ...room.peers.map((peer) => ({
       id: peer.connectionId,
       stream: peer.stream,
+      streamRevision: peer.streamRevision,
       name: peer.displayName,
       color: peer.avatarColor,
       isMuted: peer.isMuted,

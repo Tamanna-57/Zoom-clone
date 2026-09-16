@@ -161,13 +161,19 @@ export function useMeetingRoom({
         // Safari fires ontrack with an empty `streams` list, one event per track,
         // so a Chrome-shaped `event.streams[0]` read silently drops everything a
         // Mac sends. Fall back to assembling the stream from the tracks instead.
+        //
+        // Build a *new* MediaStream each time rather than adding to one in
+        // place. Chrome will render a track appended to a stream that is
+        // already attached to a <video>; Safari will not, so the audio track
+        // (which arrives second) stayed silent. Changing the object identity is
+        // what makes the tile re-attach it.
         let remoteStream = event.streams[0] as MediaStream | undefined;
         if (!remoteStream) {
-          const assembled = pendingStreamsRef.current.get(connectionId) ?? new MediaStream();
-          if (!assembled.getTracks().some((track) => track.id === event.track.id)) {
-            assembled.addTrack(event.track);
-          }
-          remoteStream = assembled;
+          const previous = pendingStreamsRef.current.get(connectionId);
+          const tracks = previous?.getTracks() ?? [];
+          remoteStream = tracks.some((track) => track.id === event.track.id)
+            ? previous!
+            : new MediaStream([...tracks, event.track]);
         }
         // ontrack fires once per stream. If the roster has not caught up yet,
         // dropping it here would lose the peer's media for the whole call.
