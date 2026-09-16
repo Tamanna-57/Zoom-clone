@@ -141,6 +141,9 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 "peers": existing_peers,
                 # Whoever joins late still needs the board and the open ballots.
                 "whiteboard": list(room.strokes) if room else [],
+                # A late joiner walks into a presentation already in progress.
+                "whiteboardOpen": bool(room.board_open) if room else False,
+                "whiteboardBy": room.board_owner if room else "",
                 "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
                 "waiting": waiting,
             }
@@ -293,6 +296,18 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
         if room is None:
             return
         action = message.get("action")
+        if action in ("open", "close"):
+            # Putting the board on everyone's stage is a presenting control, the
+            # same as sharing a screen, so it follows the same rule as clearing.
+            if connection.role == "participant":
+                return
+            room.board_open = action == "open"
+            room.board_owner = connection.display_name if room.board_open else ""
+            await hub.broadcast(
+                meeting.code,
+                {"type": "whiteboard", "action": action, "by": connection.display_name},
+            )
+            return
         if action == "clear":
             # Same rule as the polls below. The UI hides this from participants,
             # but hiding a button proves nothing: anyone could send this message
@@ -303,6 +318,9 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
             await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "clear"})
             return
         if action != "stroke":
+            return
+        # Nobody can draw on a board that is not on the stage.
+        if not room.board_open:
             return
         stroke = message.get("stroke")
         if not isinstance(stroke, dict):

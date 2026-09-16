@@ -220,11 +220,13 @@ export interface Poll {
 }
 
 export type ServerEvent =
-  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; whiteboard?: Stroke[]; polls?: Poll[]; waiting?: WaitingParticipant[] }
+  | { type: "welcome"; self: PeerInfo; peers: PeerInfo[]; whiteboard?: Stroke[]; whiteboardOpen?: boolean; whiteboardBy?: string; polls?: Poll[]; waiting?: WaitingParticipant[] }
   | { type: "waiting-room"; waiting: WaitingParticipant[] }
   | { type: "admitted"; participantId: number; by: string }
   | { type: "whiteboard"; action: "stroke"; stroke: Stroke }
   | { type: "whiteboard"; action: "clear" }
+  | { type: "whiteboard"; action: "open"; by: string }
+  | { type: "whiteboard"; action: "close"; by: string }
   | { type: "poll"; poll: Poll }
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-left"; connectionId: string; userId: number }

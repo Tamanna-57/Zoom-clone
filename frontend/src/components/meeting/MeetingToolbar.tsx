@@ -78,8 +78,13 @@ export function MeetingToolbar({
   onLeave,
   onEnd,
   onComingSoon,
-  onOpenWhiteboard,
+  onToggleWhiteboard,
   onOpenPolls,
+  isBoardOpen,
+  canPresent,
+  waitingRoomOn,
+  waitingCount,
+  onToggleWaitingRoom,
 }: {
   isMuted: boolean;
   isVideoOn: boolean;
@@ -103,8 +108,15 @@ export function MeetingToolbar({
   onLeave: () => void;
   onEnd: () => void;
   onComingSoon: (feature: string) => void;
-  onOpenWhiteboard: () => void;
+  onToggleWhiteboard: () => void;
   onOpenPolls: () => void;
+  /** The whiteboard is up on everyone's stage. */
+  isBoardOpen: boolean;
+  /** Host or co-host: may present the board and run the waiting room. */
+  canPresent: boolean;
+  waitingRoomOn: boolean;
+  waitingCount: number;
+  onToggleWaitingRoom: () => void;
 }) {
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -136,6 +148,15 @@ export function MeetingToolbar({
         <ToolButton icon="people" label="Participants" badge={participantCount} active={panel === "people"} onClick={() => onOpenPanel("people")} />
         <ToolButton icon="chat" label="Chat" badge={chatUnread} active={panel === "chat"} onClick={() => onOpenPanel("chat")} />
         <ToolButton icon="screen" label={isSharing ? "Stop share" : "Share"} active={isSharing} onClick={onToggleShare} />
+        <ToolButton
+          icon="pencil"
+          // A participant can draw on an open board but cannot put it up or take
+          // it down, so never offer them a "Stop" they are not allowed to press.
+          label={canPresent && isBoardOpen ? "Stop board" : "Whiteboard"}
+          active={isBoardOpen}
+          disabled={!canPresent}
+          onClick={onToggleWhiteboard}
+        />
         <ToolButton icon="record" label={isRecording ? "Stop rec" : "Record"} active={isRecording} danger={isRecording} onClick={onToggleRecording} />
         <ToolButton icon="sparkles" label="AI notes" active={panel === "notes"} onClick={() => onOpenPanel("notes")} />
 
@@ -187,21 +208,36 @@ export function MeetingToolbar({
                 </span>
                 <span className="text-[10px] uppercase text-ink-300">{captionsSupported ? (captionsOn ? "On" : "Off") : "N/A"}</span>
               </button>
-              {([
-                { label: "Whiteboard", open: onOpenWhiteboard },
-                { label: "Polls", open: onOpenPolls },
-              ] as const).map((feature) => (
+              <button
+                onClick={() => {
+                  onOpenPolls();
+                  setMoreOpen(false);
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 transition hover:bg-white/10"
+              >
+                <Icon name="grid" size={15} /> Polls
+              </button>
+              {canPresent && (
                 <button
-                  key={feature.label}
                   onClick={() => {
-                    feature.open();
+                    onToggleWaitingRoom();
                     setMoreOpen(false);
                   }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 transition hover:bg-white/10"
+                  className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 transition hover:bg-white/10"
                 >
-                  <Icon name="grid" size={15} /> {feature.label}
+                  <span className="flex items-center gap-2.5">
+                    <Icon name="clock" size={15} /> Waiting room
+                    {waitingCount > 0 && (
+                      <span className="rounded-full bg-amber-400/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+                        {waitingCount} waiting
+                      </span>
+                    )}
+                  </span>
+                  <span className={`text-[10px] font-semibold uppercase ${waitingRoomOn ? "text-zoom-green" : "text-ink-300"}`}>
+                    {waitingRoomOn ? "On" : "Off"}
+                  </span>
                 </button>
-              ))}
+              )}
               {["Breakout Rooms", "Virtual background", "Live streaming"].map((feature) => (
                 <button
                   key={feature}

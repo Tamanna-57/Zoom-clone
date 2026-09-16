@@ -77,6 +77,11 @@ class Room:
     # replayed to late joiners so everyone sees the same board and ballot.
     strokes: list[dict] = field(default_factory=list)
     polls: dict[str, Poll] = field(default_factory=dict)
+    # Whether the board is currently up on everyone's stage, and who put it
+    # there. Like a screen share, this is a property of the room rather than of
+    # one person's window: presenting means presenting *to* the meeting.
+    board_open: bool = False
+    board_owner: str = ""
 
 
 class Hub:

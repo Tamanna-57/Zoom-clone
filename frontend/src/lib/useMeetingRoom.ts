@@ -88,6 +88,9 @@ export function useMeetingRoom({
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [waiting, setWaiting] = useState<WaitingKnock[]>([]);
+  // Whose board is on the stage. Room-level, like a screen share: when it is
+  // open it is open for everyone, not just the person who clicked.
+  const [board, setBoard] = useState<{ open: boolean; by: string }>({ open: false, by: "" });
 
   const socketRef = useRef<WebSocket | null>(null);
   // Reconnect bookkeeping. A dropped socket is the normal case on a flaky
@@ -315,6 +318,7 @@ export function useMeetingRoom({
             ),
           );
           setStrokes(message.whiteboard ?? []);
+          setBoard({ open: message.whiteboardOpen ?? false, by: message.whiteboardBy ?? "" });
           setPolls(message.polls ?? []);
           setWaiting(message.waiting ?? []);
           // The peers who were already here offer to the newcomer, so there is
@@ -386,6 +390,8 @@ export function useMeetingRoom({
         }
         case "whiteboard": {
           if (message.action === "clear") setStrokes([]);
+          else if (message.action === "open") setBoard({ open: true, by: message.by });
+          else if (message.action === "close") setBoard({ open: false, by: "" });
           else setStrokes((current) => [...current, message.stroke]);
           break;
         }
@@ -452,6 +458,7 @@ export function useMeetingRoom({
       pendingStreams.clear();
       setPeers({});
       setStrokes([]);
+      setBoard({ open: false, by: "" });
       setPolls([]);
       setWaiting([]);
       setConnected(false);
@@ -480,6 +487,9 @@ export function useMeetingRoom({
         send({ type: "transcript", text, startMs, endMs }),
       sendStroke: (stroke: Stroke) => send({ type: "whiteboard", action: "stroke", stroke }),
       clearBoard: () => send({ type: "whiteboard", action: "clear" }),
+      /** Put the board on everyone's stage, or take it down again. */
+      presentBoard: () => send({ type: "whiteboard", action: "open" }),
+      stopPresentingBoard: () => send({ type: "whiteboard", action: "close" }),
       createPoll: (question: string, options: string[]) =>
         send({ type: "poll", action: "create", question, options }),
       votePoll: (pollId: string, choice: number) =>
@@ -492,5 +502,5 @@ export function useMeetingRoom({
     [send, replaceVideoTrack],
   );
 
-  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, waiting, ...api };
+  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, waiting, board, ...api };
 }

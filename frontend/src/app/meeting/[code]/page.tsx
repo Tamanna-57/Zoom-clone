@@ -26,7 +26,7 @@ import { useMeetingRoom } from "@/lib/useMeetingRoom";
 import type { JoinResponse, Meeting } from "@/lib/types";
 
 type Phase = "loading" | "prejoin" | "waiting" | "live" | "over";
-type Panel = "chat" | "people" | "notes" | "whiteboard" | "polls" | null;
+type Panel = "chat" | "people" | "notes" | "polls" | null;
 
 /** One video square: the local camera or one remote peer. */
 interface Tile {
@@ -76,6 +76,9 @@ export default function MeetingPage() {
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const isHost = Boolean(meeting && user && meeting.host.id === user.id);
+  // Presenting the board, clearing it and running the waiting room are all
+  // host-side controls, so they share one predicate.
+  const canPresent = isHost || joinData?.participant.role === "cohost";
 
   // ---------------------------------------------------------------- bootstrap
   useEffect(() => {
@@ -287,11 +290,60 @@ export default function MeetingPage() {
     return () => window.clearInterval(timer);
   }, [phase]);
 
-  // A shared screen takes over the stage, exactly like the desktop client.
+  // A shared screen — or a whiteboard someone is presenting — takes over the
+  // stage, exactly like the desktop client.
   const sharingPeer = room.peers.find((peer) => peer.isSharing) ?? null;
+  const boardOpen = room.board.open;
   useEffect(() => {
-    if (sharingPeer || isSharing) setLayout("speaker");
-  }, [sharingPeer, isSharing]);
+    if (sharingPeer || isSharing || boardOpen) setLayout("speaker");
+  }, [sharingPeer, isSharing, boardOpen]);
+
+  // Tell everyone the board went up, the way Zoom announces a share.
+  const boardBy = room.board.by;
+  const boardWasOpen = useRef(false);
+  useEffect(() => {
+    if (boardOpen && !boardWasOpen.current) {
+      notify({ kind: "info", title: "Whiteboard opened", detail: `${boardBy} is presenting a whiteboard.` });
+    }
+    boardWasOpen.current = boardOpen;
+  }, [boardOpen, boardBy, notify]);
+
+  // The waiting room is a live setting in Zoom, not something you can only
+  // decide when scheduling — so the host can flip it during the call and it
+  // applies to whoever knocks next.
+  const waitingRoomOn = Boolean(meeting?.waiting_room);
+  async function toggleWaitingRoom() {
+    if (!canPresent || !meeting) return;
+    const next = !waitingRoomOn;
+    try {
+      const updated = await api.updateMeeting(code, { waiting_room: next });
+      setMeeting(updated);
+      notify({
+        kind: "success",
+        title: next ? "Waiting room on" : "Waiting room off",
+        detail: next
+          ? "New participants will wait until you admit them."
+          : "New participants will join straight away.",
+      });
+    } catch {
+      notify({ kind: "error", title: "Could not change the waiting room" });
+    }
+  }
+
+  // Somebody knocking is easy to miss if the panel is shut, so say so once per
+  // arrival and point at where the Admit button lives.
+  const knownWaiting = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!canPresent) return;
+    const fresh = room.waiting.filter((person) => !knownWaiting.current.has(person.participant_id));
+    knownWaiting.current = new Set(room.waiting.map((person) => person.participant_id));
+    if (!fresh.length) return;
+    notify({
+      kind: "info",
+      title: fresh.length === 1 ? `${fresh[0].display_name} is waiting` : `${fresh.length} people are waiting`,
+      detail: "Open Participants to admit them.",
+    });
+  }, [room.waiting, canPresent, notify]);
 
   // -------------------------------------------------------------------- actions
   async function join() {
@@ -608,19 +660,42 @@ export default function MeetingPage() {
             </div>
           ) : (
             <div className="flex h-full flex-col gap-3">
-              <VideoTile {...stageTile} isSelf={stageTile.id === "self"} spotlight className="min-h-0 flex-1" />
-              {tiles.length > 1 && (
+              {boardOpen ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-2 rounded-xl bg-ink-900 p-3 ring-1 ring-white/10">
+                  <div className="flex items-center gap-2 text-xs text-ink-300">
+                    <Icon name="pencil" size={14} />
+                    <span className="truncate">
+                      <span className="font-semibold text-white">{room.board.by}</span> is presenting a whiteboard
+                    </span>
+                    {canPresent && (
+                      <button
+                        onClick={() => room.stopPresentingBoard()}
+                        className="ml-auto rounded-md bg-white/10 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-white/20"
+                      >
+                        Stop whiteboard
+                      </button>
+                    )}
+                  </div>
+                  <Whiteboard
+                    strokes={room.strokes}
+                    onStroke={room.sendStroke}
+                    onClear={room.clearBoard}
+                    canClear={canPresent}
+                  />
+                </div>
+              ) : (
+                <VideoTile {...stageTile} isSelf={stageTile.id === "self"} spotlight className="min-h-0 flex-1" />
+              )}
+              {(boardOpen ? tiles : tiles.filter((tile) => tile.id !== stageTile.id)).length > 0 && (
                 <div className="flex h-28 shrink-0 gap-3 overflow-x-auto">
-                  {tiles
-                    .filter((tile) => tile.id !== stageTile.id)
-                    .map((tile) => (
-                      <VideoTile
-                        key={tile.id}
-                        {...tile}
-                        isSelf={tile.id === "self"}
-                        className="aspect-video h-full shrink-0"
-                      />
-                    ))}
+                  {(boardOpen ? tiles : tiles.filter((tile) => tile.id !== stageTile.id)).map((tile) => (
+                    <VideoTile
+                      key={tile.id}
+                      {...tile}
+                      isSelf={tile.id === "self"}
+                      className="aspect-video h-full shrink-0"
+                    />
+                  ))}
                 </div>
               )}
             </div>
@@ -673,18 +748,6 @@ export default function MeetingPage() {
                 onInvite={() => setShowInfo(true)}
               />
             )}
-            {panel === "whiteboard" && (
-              <SidePanel title="Whiteboard" onClose={() => setPanel(null)}>
-                <div className="h-[70vh] p-3 md:h-full">
-                  <Whiteboard
-                    strokes={room.strokes}
-                    onStroke={room.sendStroke}
-                    onClear={room.clearBoard}
-                    canClear={isHost || joinData?.participant.role === "cohost"}
-                  />
-                </div>
-              </SidePanel>
-            )}
             {panel === "polls" && (
               <SidePanel title="Polls" onClose={() => setPanel(null)}>
                 <div className="p-3">
@@ -734,7 +797,19 @@ export default function MeetingPage() {
         onToggleHand={toggleHand}
         onToggleCaptions={() => (captions.listening ? captions.disable() : captions.enable())}
         onReaction={(emoji) => room.sendReaction(emoji)}
-        onOpenWhiteboard={() => setPanel((current) => (current === "whiteboard" ? null : "whiteboard"))}
+        isBoardOpen={boardOpen}
+        canPresent={canPresent}
+        waitingRoomOn={waitingRoomOn}
+        waitingCount={room.waiting.length}
+        onToggleWaitingRoom={() => void toggleWaitingRoom()}
+        onToggleWhiteboard={() => {
+          if (!canPresent) {
+            notify({ kind: "info", title: "Only the host can start the whiteboard" });
+            return;
+          }
+          if (boardOpen) room.stopPresentingBoard();
+          else room.presentBoard();
+        }}
         onOpenPolls={() => setPanel((current) => (current === "polls" ? null : "polls"))}
         onOpenPanel={(next) => setPanel((current) => (current === next ? null : next))}
         onLeave={() => void leave()}
