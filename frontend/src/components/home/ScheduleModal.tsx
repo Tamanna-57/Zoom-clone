@@ -39,7 +39,7 @@ export function ScheduleModal({
     duration: 30,
     agenda: "",
     passcode: true,
-    waitingRoom: false,
+    waitingRoom: true,
     muteOnEntry: true,
     autoRecord: true,
     invitees: [] as number[],
@@ -152,7 +152,7 @@ export function ScheduleModal({
 
         <div className="rounded-xl border border-line p-2">
           <Toggle checked={form.passcode} onChange={(v) => setForm({ ...form, passcode: v })} label="Require passcode" description="A 6-digit code is generated for you." />
-          <Toggle checked={form.waitingRoom} onChange={(v) => setForm({ ...form, waitingRoom: v })} label="Enable waiting room" description="Placeholder in this build." />
+          <Toggle checked={form.waitingRoom} onChange={(v) => setForm({ ...form, waitingRoom: v })} label="Enable waiting room" description="Guests knock and you let them in." />
           <Toggle checked={form.muteOnEntry} onChange={(v) => setForm({ ...form, muteOnEntry: v })} label="Mute participants on entry" />
           <Toggle checked={form.autoRecord} onChange={(v) => setForm({ ...form, autoRecord: v })} label="Record automatically" description="Starts the AI notetaker when the meeting begins." />
         </div>

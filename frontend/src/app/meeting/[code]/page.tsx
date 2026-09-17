@@ -265,13 +265,41 @@ export default function MeetingPage() {
     else notify({ kind: "info", title: `${room.whiteboard.by ?? "Someone"} is sharing the whiteboard` });
   }
 
+  // A knock is useless if nobody notices it: the host's panel is usually
+  // closed, so announce each new arrival and open the panel on the first one.
+  const knownKnocks = useRef(new Set<number>());
+  useEffect(() => {
+    if (!isHost) return;
+    const arrived = room.waiting.filter((person) => !knownKnocks.current.has(person.participant_id));
+    knownKnocks.current = new Set(room.waiting.map((person) => person.participant_id));
+    if (arrived.length === 0) return;
+    setPanel((current) => current ?? "people");
+    arrived.forEach((person) =>
+      notify({
+        kind: "info",
+        title: `${person.display_name} is in the waiting room`,
+        detail: "Open Participants to admit them.",
+      }),
+    );
+  }, [room.waiting, isHost, notify]);
+
+  async function setWaitingRoom(on: boolean) {
+    try {
+      const updated = await api.updateMeeting(code, { waiting_room: on });
+      setMeeting(updated);
+      notify({ kind: "success", title: on ? "Waiting room on" : "Waiting room off" });
+    } catch {
+      notify({ kind: "error", title: "Could not change the waiting room" });
+    }
+  }
+
   // Someone in the waiting room holds no meeting socket — the server refuses it
   // until they are admitted — so the browser asks the join endpoint instead.
   // The host's decision lands within a few seconds either way.
   useEffect(() => {
     if (phase !== "waiting") return;
     let cancelled = false;
-    const poll = window.setInterval(async () => {
+    const check = async () => {
       try {
         const response = await api.joinMeeting(code, { passcode: passcode || undefined });
         if (cancelled || !response.admitted) return;
@@ -287,7 +315,11 @@ export default function MeetingPage() {
         setLoadError(caught instanceof Error ? caught.message : "You could not join this meeting");
         setPhase("over");
       }
-    }, 3000);
+    };
+    // Ask once straight away: a host who is already looking at the knock list
+    // may admit before the first tick would ever come round.
+    void check();
+    const poll = window.setInterval(check, 2000);
     return () => {
       cancelled = true;
       window.clearInterval(poll);
@@ -727,7 +759,14 @@ export default function MeetingPage() {
                   color: person.avatar_color,
                 }))}
                 waiting={room.waiting}
+                waitingRoomOn={Boolean(meeting?.waiting_room)}
+                onToggleWaitingRoom={(on) => void setWaitingRoom(on)}
                 onAdmit={(id) => void api.admitParticipant(code, id)}
+                onAdmitAll={() =>
+                  void Promise.all(
+                    room.waiting.map((person) => api.admitParticipant(code, person.participant_id)),
+                  ).catch(() => notify({ kind: "error", title: "Could not admit everyone" }))
+                }
                 onDeny={(id) => void api.denyParticipant(code, id)}
                 onClose={() => setPanel(null)}
                 onMute={(id) => void api.muteParticipant(code, id)}
