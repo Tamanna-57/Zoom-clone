@@ -168,3 +168,31 @@ def test_a_host_can_end_a_participants_share():
     _send(host, meeting, {"type": "whiteboard", "action": "close"})
 
     assert room.whiteboard_open is False
+
+
+def test_leaving_tells_the_room_at_once():
+    """A departure must not wait on the browser's socket teardown."""
+    meeting = _Meeting(code="board-9")
+    room, connection = _room_with_a_drawing(meeting.code)
+    watcher = connection("host")
+    goer = connection("participant")
+
+    class _ClosingSocket(_Socket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed_with: int | None = None
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed_with = code
+
+    goer.websocket = _ClosingSocket()
+
+    _send(goer, meeting, {"type": "leave"})
+
+    assert {
+        "type": "peer-left",
+        "connectionId": goer.id,
+        "userId": goer.user_id,
+    } in watcher.websocket.sent
+    assert goer.websocket.closed_with == 1000
+    assert goer.id not in room.connections

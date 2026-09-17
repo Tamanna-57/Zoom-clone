@@ -80,6 +80,7 @@ export function MeetingToolbar({
   onComingSoon,
   onOpenWhiteboard,
   onOpenPolls,
+  isWhiteboardOpen,
 }: {
   isMuted: boolean;
   isVideoOn: boolean;
@@ -105,8 +106,10 @@ export function MeetingToolbar({
   onComingSoon: (feature: string) => void;
   onOpenWhiteboard: () => void;
   onOpenPolls: () => void;
+  isWhiteboardOpen: boolean;
 }) {
   const [reactionsOpen, setReactionsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
@@ -117,6 +120,7 @@ export function MeetingToolbar({
         setReactionsOpen(false);
         setMoreOpen(false);
         setLeaveOpen(false);
+        setShareOpen(false);
       }
     };
     document.addEventListener("mousedown", close);
@@ -135,7 +139,39 @@ export function MeetingToolbar({
       <div className="hidden items-center gap-1 sm:flex">
         <ToolButton icon="people" label="Participants" badge={participantCount} active={panel === "people"} onClick={() => onOpenPanel("people")} />
         <ToolButton icon="chat" label="Chat" badge={chatUnread} active={panel === "chat"} onClick={() => onOpenPanel("chat")} />
-        <ToolButton icon="screen" label={isSharing ? "Stop share" : "Share"} active={isSharing} onClick={onToggleShare} />
+        {/* Zoom asks *what* you want to share: a screen or the whiteboard. The
+            browser's own picker only covers the first, so the choice lives here. */}
+        <div className="relative">
+          <ToolButton
+            icon="screen"
+            label={isSharing ? "Stop share" : "Share"}
+            active={isSharing || shareOpen}
+            onClick={() => (isSharing ? onToggleShare() : setShareOpen((open) => !open))}
+          />
+          {shareOpen && !isSharing && (
+            <div className="animate-slide-in absolute bottom-16 left-1/2 w-60 -translate-x-1/2 rounded-xl border border-white/10 bg-ink-800 p-1.5 text-sm text-white shadow-2xl">
+              <button
+                onClick={() => {
+                  onToggleShare();
+                  setShareOpen(false);
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition hover:bg-white/10"
+              >
+                <Icon name="screen" size={15} /> Screen or window
+              </button>
+              <button
+                onClick={() => {
+                  onOpenWhiteboard();
+                  setShareOpen(false);
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition hover:bg-white/10"
+              >
+                <Icon name="pencil" size={15} />
+                {isWhiteboardOpen ? "Stop sharing whiteboard" : "Whiteboard"}
+              </button>
+            </div>
+          )}
+        </div>
         <ToolButton icon="record" label={isRecording ? "Stop rec" : "Record"} active={isRecording} danger={isRecording} onClick={onToggleRecording} />
         <ToolButton icon="sparkles" label="AI notes" active={panel === "notes"} onClick={() => onOpenPanel("notes")} />
 
@@ -188,7 +224,7 @@ export function MeetingToolbar({
                 <span className="text-[10px] uppercase text-ink-300">{captionsSupported ? (captionsOn ? "On" : "Off") : "N/A"}</span>
               </button>
               {([
-                { label: "Whiteboard", open: onOpenWhiteboard },
+                { label: isWhiteboardOpen ? "Stop sharing whiteboard" : "Whiteboard", open: onOpenWhiteboard },
                 { label: "Polls", open: onOpenPolls },
               ] as const).map((feature) => (
                 <button
