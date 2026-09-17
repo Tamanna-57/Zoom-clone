@@ -326,6 +326,9 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
             room.whiteboard_open = False
             room.whiteboard_by = None
             room.whiteboard_by_connection = None
+            # Ending the share ends the drawing with it: the next person to put
+            # a board up starts on a blank one rather than someone else's notes.
+            room.strokes.clear()
             await hub.broadcast(
                 meeting.code,
                 {"type": "whiteboard", "action": "close", "by": connection.display_name},

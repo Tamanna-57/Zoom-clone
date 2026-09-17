@@ -413,8 +413,12 @@ export function useMeetingRoom({
           if (message.action === "clear") setStrokes([]);
           else if (message.action === "open")
             setWhiteboard({ open: true, by: message.by, byConnection: message.byConnection });
-          else if (message.action === "close")
+          else if (message.action === "close") {
             setWhiteboard({ open: false, by: null, byConnection: null });
+            // The server wipes the board when the share ends, so drop the
+            // strokes here too instead of flashing them on the next share.
+            setStrokes([]);
+          }
           else setStrokes((current) => [...current, message.stroke]);
           break;
         }

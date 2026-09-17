@@ -155,6 +155,7 @@ def test_the_sharer_can_end_their_own_share():
 
     assert room.whiteboard_open is False
     assert room.whiteboard_by is None
+    assert room.strokes == [], "the board kept its drawing after the share ended"
 
 
 def test_a_host_can_end_a_participants_share():
