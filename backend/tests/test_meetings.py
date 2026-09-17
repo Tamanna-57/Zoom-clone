@@ -133,6 +133,28 @@ def test_waiting_room_holds_a_guest_until_the_host_admits(client, host, guest):
     assert client.get(f"/api/meetings/{code}/waiting", headers=auth(host_token)).json() == []
 
 
+def test_the_host_can_switch_the_waiting_room_off_mid_meeting(client, host, guest):
+    """The in-meeting toggle has to actually drop the rope for the next guest."""
+    host_token, _ = host
+    guest_token, _ = guest
+    meeting = make_meeting(client, host_token, waiting_room=True, passcode_required=False)
+    code = meeting["code"]
+
+    assert client.post(f"/api/meetings/{code}/join", json={}, headers=auth(guest_token)).json()[
+        "admitted"
+    ] is False
+
+    off = client.patch(
+        f"/api/meetings/{code}", json={"waiting_room": False}, headers=auth(host_token)
+    )
+    assert off.status_code == 200
+    assert off.json()["waiting_room"] is False
+
+    assert client.post(f"/api/meetings/{code}/join", json={}, headers=auth(guest_token)).json()[
+        "admitted"
+    ] is True
+
+
 def test_an_attendee_cannot_run_the_waiting_room(client, host, guest):
     host_token, _ = host
     guest_token, _ = guest

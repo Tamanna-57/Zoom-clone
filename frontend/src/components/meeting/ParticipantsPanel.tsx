@@ -21,6 +21,9 @@ export function ParticipantsPanel({
   onAdmit,
   onDeny,
   onInvite,
+  onAdmitAll,
+  waitingRoomOn,
+  onToggleWaitingRoom,
 }: {
   peers: PeerInfo[];
   self: PeerInfo | null;
@@ -35,6 +38,10 @@ export function ParticipantsPanel({
   onAdmit: (participantId: number) => void;
   onDeny: (participantId: number) => void;
   onInvite: () => void;
+  onAdmitAll: () => void;
+  /** Whether the meeting is holding newcomers at all. Host-only control. */
+  waitingRoomOn: boolean;
+  onToggleWaitingRoom: (on: boolean) => void;
 }) {
   const [menu, setMenu] = useState<string | null>(null);
   const everyone = [...(self ? [self] : []), ...peers];
@@ -59,11 +66,42 @@ export function ParticipantsPanel({
       }
     >
       <div className="px-2 py-2">
-        {isHost && waiting.length > 0 && (
+        {isHost && (
           <div className="mb-3 rounded-xl border border-amber-400/30 bg-amber-400/8 p-2">
-            <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
-              Waiting room ({waiting.length})
-            </p>
+            <div className="flex items-center gap-2 px-1 pb-1.5">
+              <p className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-amber-300">
+                Waiting room{waiting.length > 0 ? ` (${waiting.length})` : ""}
+              </p>
+              {waiting.length > 1 && (
+                <button
+                  onClick={onAdmitAll}
+                  className="rounded-lg px-2 py-0.5 text-xs font-semibold text-amber-200 transition hover:bg-white/10"
+                >
+                  Admit all
+                </button>
+              )}
+              {/* The host can drop the rope mid-meeting, the way Zoom lets them. */}
+              <button
+                role="switch"
+                aria-checked={waitingRoomOn}
+                aria-label="Hold newcomers in the waiting room"
+                onClick={() => onToggleWaitingRoom(!waitingRoomOn)}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition ${
+                  waitingRoomOn ? "bg-zoom-blue" : "bg-white/20"
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                    waitingRoomOn ? "left-[18px]" : "left-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+            {waiting.length === 0 && (
+              <p className="px-1 pb-1 text-xs text-ink-300">
+                {waitingRoomOn ? "No one is waiting." : "Off — guests join straight away."}
+              </p>
+            )}
             {waiting.map((person) => (
               <div key={person.participant_id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
                 <Avatar name={person.display_name} color={person.avatar_color} size="sm" online={false} />

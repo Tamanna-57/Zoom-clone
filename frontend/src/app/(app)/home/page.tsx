@@ -60,6 +60,7 @@ export default function HomePage() {
         topic: `${user?.display_name ?? "My"}'s Zoomeet Meeting`,
         start_now: true,
         passcode_required: false,
+        waiting_room: true,
         mute_on_entry: false,
         auto_record: true,
       });
