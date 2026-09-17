@@ -251,6 +251,38 @@ export default function MeetingPage() {
     }
   }, [room.messages.length, panel]);
 
+  // The whiteboard is shared, not personal: when anyone puts the board up the
+  // panel opens for everyone, and when the share ends it closes for everyone.
+  const boardOpen = room.whiteboard.open;
+  useEffect(() => {
+    if (boardOpen) setPanel("whiteboard");
+    else setPanel((current) => (current === "whiteboard" ? null : current));
+  }, [boardOpen]);
+
+  // Ending the share belongs to whoever started it, plus the host and cohosts.
+  const canEndBoard =
+    room.whiteboard.open &&
+    (isHost ||
+      joinData?.participant.role === "cohost" ||
+      room.whiteboard.byConnection === room.self?.connectionId);
+
+  function toggleWhiteboard() {
+    // Not shared yet: put it up for the whole room.
+    if (!room.whiteboard.open) {
+      room.openBoard();
+      setPanel("whiteboard");
+      return;
+    }
+    // Shared but hidden on this screen (a participant closed their panel):
+    // bring it back without touching anyone else's view.
+    if (panel !== "whiteboard") {
+      setPanel("whiteboard");
+      return;
+    }
+    if (canEndBoard) room.closeBoard();
+    else setPanel(null);
+  }
+
   // Someone in the waiting room holds no meeting socket — the server refuses it
   // until they are admitted — so the browser asks the join endpoint instead.
   // The host's decision lands within a few seconds either way.
@@ -676,7 +708,17 @@ export default function MeetingPage() {
               />
             )}
             {panel === "whiteboard" && (
-              <SidePanel title="Whiteboard" onClose={() => setPanel(null)}>
+              <SidePanel
+                title={
+                  room.whiteboard.by && room.whiteboard.byConnection !== room.self?.connectionId
+                    ? `Whiteboard · shared by ${room.whiteboard.by}`
+                    : "Whiteboard"
+                }
+                // Closing the board ends the share for the room, so only the
+                // person sharing it (or a host) may do that; anyone else just
+                // hides their own panel.
+                onClose={() => (canEndBoard ? room.closeBoard() : setPanel(null))}
+              >
                 <div className="h-[70vh] p-3 md:h-full">
                   <Whiteboard
                     strokes={room.strokes}
@@ -736,7 +778,7 @@ export default function MeetingPage() {
         onToggleHand={toggleHand}
         onToggleCaptions={() => (captions.listening ? captions.disable() : captions.enable())}
         onReaction={(emoji) => room.sendReaction(emoji)}
-        onOpenWhiteboard={() => setPanel((current) => (current === "whiteboard" ? null : "whiteboard"))}
+        onOpenWhiteboard={toggleWhiteboard}
         onOpenPolls={() => setPanel((current) => (current === "polls" ? null : "polls"))}
         onOpenPanel={(next) => setPanel((current) => (current === next ? null : next))}
         onLeave={() => void leave()}
