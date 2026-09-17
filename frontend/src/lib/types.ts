@@ -201,12 +201,38 @@ export interface PeerInfo {
   isSharing: boolean;
 }
 
-/** One freehand line on the shared whiteboard, in 0..1 canvas coordinates. */
-export interface Stroke {
+/** What a single mark on the shared whiteboard can be. */
+export type BoardKind = "pen" | "highlighter" | "line" | "arrow" | "rect" | "ellipse" | "text" | "note";
+
+/**
+ * One object on the shared whiteboard.
+ *
+ * The board is a list of these rather than a bitmap, so a mark keeps its
+ * identity and can be moved, erased or undone on its own long after it was
+ * drawn. Coordinates are 0..1 within the board's own fixed 16:9 space, so the
+ * same drawing lands in the same place on every screen.
+ */
+export interface BoardItem {
+  id: string;
+  kind: BoardKind;
+  /** Freehand keeps its whole path; every other kind keeps two corners. */
   points: [number, number][];
   color: string;
+  /** Stroke weight (or font size) in per-mille of the board's height. */
   width: number;
-  by?: string;
+  /** Text boxes and sticky notes only. */
+  text?: string;
+  by: string;
+  byConnection: string;
+}
+
+/** Where someone else's pen is right now. Presence only — never stored. */
+export interface BoardCursor {
+  connectionId: string;
+  by: string;
+  color: string;
+  x: number;
+  y: number;
 }
 
 export interface Poll {
@@ -224,19 +250,24 @@ export type ServerEvent =
       type: "welcome";
       self: PeerInfo;
       peers: PeerInfo[];
-      whiteboard?: Stroke[];
+      whiteboard?: BoardItem[];
       whiteboardOpen?: boolean;
       whiteboardBy?: string | null;
       whiteboardByConnection?: string | null;
+      whiteboardLocked?: boolean;
       polls?: Poll[];
       waiting?: WaitingParticipant[];
     }
   | { type: "waiting-room"; waiting: WaitingParticipant[] }
   | { type: "admitted"; participantId: number; by: string }
-  | { type: "whiteboard"; action: "stroke"; stroke: Stroke }
+  | { type: "whiteboard"; action: "add"; item: BoardItem }
+  | { type: "whiteboard"; action: "move"; id: string; points: [number, number][] }
+  | { type: "whiteboard"; action: "delete"; ids: string[] }
   | { type: "whiteboard"; action: "clear" }
+  | { type: "whiteboard"; action: "lock"; locked: boolean; by: string }
   | { type: "whiteboard"; action: "open"; by: string; byConnection: string }
   | { type: "whiteboard"; action: "close"; by: string }
+  | { type: "whiteboard"; action: "cursor"; connectionId: string; by: string; color: string; x: number; y: number }
   | { type: "poll"; poll: Poll }
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-left"; connectionId: string; userId: number }

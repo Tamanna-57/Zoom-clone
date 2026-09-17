@@ -255,9 +255,14 @@ export default function MeetingPage() {
   // in the call rather than opening a panel on one person's screen.
   const boardOpen = room.whiteboard.open;
   const boardIsMine = room.whiteboard.byConnection === room.self?.connectionId;
+  // Hosts and cohosts moderate the board: they clear it, latch it, and edit
+  // marks that are not theirs. The server enforces all three; this only decides
+  // which controls are worth showing.
+  const canModerateBoard = isHost || joinData?.participant.role === "cohost";
   // Ending the share belongs to whoever started it, plus the host and cohosts.
-  const canEndBoard =
-    boardOpen && (isHost || joinData?.participant.role === "cohost" || boardIsMine);
+  const canEndBoard = boardOpen && (canModerateBoard || boardIsMine);
+  // Your own pen is already on your screen; the others are the ones worth drawing.
+  const boardCursors = Object.values(room.boardCursors);
 
   function toggleWhiteboard() {
     if (!boardOpen) room.openBoard();
@@ -675,10 +680,19 @@ export default function MeetingPage() {
                 </header>
                 <div className="min-h-0 flex-1">
                   <Whiteboard
-                    strokes={room.strokes}
-                    onStroke={room.sendStroke}
+                    items={room.boardItems}
+                    cursors={boardCursors}
+                    selfConnectionId={room.self?.connectionId ?? null}
+                    selfName={room.self?.displayName ?? "You"}
+                    canModerate={canModerateBoard}
+                    locked={room.whiteboard.locked}
+                    topic={meeting?.topic ?? "meeting"}
+                    onAdd={room.addBoardItem}
+                    onMove={room.moveBoardItem}
+                    onDelete={room.deleteBoardItems}
                     onClear={room.clearBoard}
-                    canClear={isHost || joinData?.participant.role === "cohost"}
+                    onLock={room.lockBoard}
+                    onCursor={room.sendBoardCursor}
                   />
                 </div>
               </section>

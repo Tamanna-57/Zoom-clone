@@ -4,14 +4,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getToken } from "./api";
 import { WS_URL } from "./config";
-import type { ChatMessage, PeerInfo, Poll, ServerEvent, Stroke, TranscriptSegment } from "./types";
+import type { BoardCursor, BoardItem, ChatMessage, PeerInfo, Poll, ServerEvent, TranscriptSegment } from "./types";
 
 /** The room-wide whiteboard share: who put the board up, if anyone. */
 export interface WhiteboardSession {
   open: boolean;
   by: string | null;
   byConnection: string | null;
+  /** Zoom's "who can annotate": while on, only hosts may change the board. */
+  locked: boolean;
 }
+
+/** Someone else's pen, with the moment we last heard from it. */
+export interface LiveCursor extends BoardCursor {
+  at: number;
+}
+
+/** A cursor nobody has moved for this long has stopped meaning anything. */
+const CURSOR_TTL_MS = 4_000;
 
 export interface RemotePeer extends PeerInfo {
   stream: MediaStream | null;
@@ -92,13 +102,15 @@ export function useMeetingRoom({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
-  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [boardItems, setBoardItems] = useState<BoardItem[]>([]);
+  const [boardCursors, setBoardCursors] = useState<Record<string, LiveCursor>>({});
   // Who, if anyone, is currently sharing the whiteboard with the room. Held
   // server-side so every tab agrees and late joiners land on the open board.
   const [whiteboard, setWhiteboard] = useState<WhiteboardSession>({
     open: false,
     by: null,
     byConnection: null,
+    locked: false,
   });
   const [polls, setPolls] = useState<Poll[]>([]);
   const [waiting, setWaiting] = useState<WaitingKnock[]>([]);
@@ -334,11 +346,12 @@ export function useMeetingRoom({
               message.peers.map((peer) => [peer.connectionId, { ...peer, stream: null }]),
             ),
           );
-          setStrokes(message.whiteboard ?? []);
+          setBoardItems(message.whiteboard ?? []);
           setWhiteboard({
             open: Boolean(message.whiteboardOpen),
             by: message.whiteboardBy ?? null,
             byConnection: message.whiteboardByConnection ?? null,
+            locked: Boolean(message.whiteboardLocked),
           });
           setPolls(message.polls ?? []);
           setWaiting(message.waiting ?? []);
@@ -371,6 +384,14 @@ export function useMeetingRoom({
         case "peer-left": {
           closeConnection(message.connectionId);
           setPeers((current) => {
+            const next = { ...current };
+            delete next[message.connectionId];
+            return next;
+          });
+          // Their pen went with them; leaving it on the board would strand a
+          // name over a mark nobody is drawing.
+          setBoardCursors((current) => {
+            if (!(message.connectionId in current)) return current;
             const next = { ...current };
             delete next[message.connectionId];
             return next;
@@ -410,16 +431,60 @@ export function useMeetingRoom({
           break;
         }
         case "whiteboard": {
-          if (message.action === "clear") setStrokes([]);
-          else if (message.action === "open")
-            setWhiteboard({ open: true, by: message.by, byConnection: message.byConnection });
-          else if (message.action === "close") {
-            setWhiteboard({ open: false, by: null, byConnection: null });
-            // The server wipes the board when the share ends, so drop the
-            // strokes here too instead of flashing them on the next share.
-            setStrokes([]);
+          switch (message.action) {
+            case "add": {
+              const item = message.item;
+              // Our own marks are already on screen optimistically; the echo is
+              // what makes them real, so replace rather than append.
+              setBoardItems((current) => [...current.filter((mark) => mark.id !== item.id), item]);
+              break;
+            }
+            case "move": {
+              setBoardItems((current) =>
+                current.map((mark) => (mark.id === message.id ? { ...mark, points: message.points } : mark)),
+              );
+              break;
+            }
+            case "delete": {
+              const gone = new Set(message.ids);
+              setBoardItems((current) => current.filter((mark) => !gone.has(mark.id)));
+              break;
+            }
+            case "clear":
+              setBoardItems([]);
+              break;
+            case "lock":
+              setWhiteboard((current) => ({ ...current, locked: message.locked }));
+              break;
+            case "open":
+              setWhiteboard({
+                open: true,
+                by: message.by,
+                byConnection: message.byConnection,
+                locked: false,
+              });
+              break;
+            case "close":
+              setWhiteboard({ open: false, by: null, byConnection: null, locked: false });
+              // The server wipes the board when the share ends, so drop the
+              // marks here too instead of flashing them on the next share.
+              setBoardItems([]);
+              setBoardCursors({});
+              break;
+            case "cursor":
+              setBoardCursors((current) => ({
+                ...current,
+                [message.connectionId]: {
+                  connectionId: message.connectionId,
+                  by: message.by,
+                  color: message.color,
+                  x: message.x,
+                  y: message.y,
+                  at: Date.now(),
+                },
+              }));
+              break;
           }
-          else setStrokes((current) => [...current, message.stroke]);
           break;
         }
         case "poll": {
@@ -484,8 +549,9 @@ export function useMeetingRoom({
       pendingIce.clear();
       pendingStreams.clear();
       setPeers({});
-      setStrokes([]);
-      setWhiteboard({ open: false, by: null, byConnection: null });
+      setBoardItems([]);
+      setBoardCursors({});
+      setWhiteboard({ open: false, by: null, byConnection: null, locked: false });
       setPolls([]);
       setWaiting([]);
       setConnected(false);
@@ -507,6 +573,21 @@ export function useMeetingRoom({
     return () => window.removeEventListener("pagehide", announce);
   }, [enabled]);
 
+  // A pen that stopped moving is not a pen that is still there: someone can
+  // switch tabs, or their last cursor message can be the last thing we hear
+  // before a drop. Age them out rather than leaving a name parked on the board.
+  useEffect(() => {
+    const sweep = window.setInterval(() => {
+      const cutoff = Date.now() - CURSOR_TTL_MS;
+      setBoardCursors((current) => {
+        const live = Object.entries(current).filter(([, cursor]) => cursor.at > cutoff);
+        // Same object when nothing expired, so this does not re-render the board.
+        return live.length === Object.keys(current).length ? current : Object.fromEntries(live);
+      });
+    }, 1_500);
+    return () => window.clearInterval(sweep);
+  }, []);
+
   /** Swap the outgoing video (camera <-> screen) without renegotiating. */
   const replaceVideoTrack = useCallback((track: MediaStreamTrack | null) => {
     // Remembered so peers that connect *after* this point are given the same
@@ -527,8 +608,13 @@ export function useMeetingRoom({
       sendReaction: (emoji: string) => send({ type: "reaction", emoji }),
       sendTranscript: (text: string, startMs: number, endMs: number) =>
         send({ type: "transcript", text, startMs, endMs }),
-      sendStroke: (stroke: Stroke) => send({ type: "whiteboard", action: "stroke", stroke }),
+      addBoardItem: (item: BoardItem) => send({ type: "whiteboard", action: "add", item }),
+      moveBoardItem: (id: string, dx: number, dy: number) =>
+        send({ type: "whiteboard", action: "move", id, dx, dy }),
+      deleteBoardItems: (ids: string[]) => send({ type: "whiteboard", action: "delete", ids }),
       clearBoard: () => send({ type: "whiteboard", action: "clear" }),
+      lockBoard: (locked: boolean) => send({ type: "whiteboard", action: "lock", locked }),
+      sendBoardCursor: (x: number, y: number) => send({ type: "whiteboard", action: "cursor", x, y }),
       /** Announce the departure and hang up now, rather than letting the socket
        *  die on its own during navigation: the other grids drop the tile as
        *  soon as the server hears it, not a few seconds later. */
@@ -554,5 +640,18 @@ export function useMeetingRoom({
     [send, replaceVideoTrack],
   );
 
-  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, whiteboard, polls, waiting, ...api };
+  return {
+    connected,
+    self,
+    peers: Object.values(peers),
+    messages,
+    segments,
+    reactions,
+    boardItems,
+    boardCursors,
+    whiteboard,
+    polls,
+    waiting,
+    ...api,
+  };
 }
