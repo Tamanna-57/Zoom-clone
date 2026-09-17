@@ -10,7 +10,10 @@ export type IconName =
   | "clock" | "star" | "link" | "copy" | "trash" | "close" | "chevron-down" | "chevron-right"
   | "sparkles" | "check" | "home" | "sun" | "moon" | "grid" | "spotlight" | "shield" | "bell"
   | "monitor" | "play" | "download" | "pencil" | "logout" | "lock" | "info" | "wave" | "arrow-left"
-  | "phone" | "user-plus" | "film" | "list" | "pin";
+  | "phone" | "user-plus" | "film" | "list" | "pin"
+  // The whiteboard's tool rail.
+  | "cursor" | "highlighter" | "eraser" | "text" | "note" | "line" | "arrow-up-right"
+  | "square" | "circle" | "undo" | "redo" | "unlock";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   video: <><rect x="2" y="6" width="13" height="12" rx="2.5" /><path d="M15 10.5 22 7v10l-7-3.5z" /></>,
@@ -60,6 +63,18 @@ const PATHS: Record<IconName, React.ReactNode> = {
   film: <><rect x="2.5" y="4.5" width="19" height="15" rx="2" /><path d="M7 4.5v15M17 4.5v15M2.5 12h19M2.5 8.2h4.5M2.5 15.8h4.5M17 8.2h4.5M17 15.8h4.5" /></>,
   list: <><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" /></>,
   pin: <><path d="M15 3 21 9l-3.5 1.5-4 4L12 21l-2-5.5L4.5 13l6.5-1.5L15 8z" /></>,
+  cursor: <><path d="m5 3 14 8.5-6.2 1.6L9.7 19z" /></>,
+  highlighter: <><path d="M14 5.5 18.5 10 11 17.5H6.5v-4.5z" /><path d="M4 21h16" /></>,
+  eraser: <><path d="m9 20-5.2-5.2a1.6 1.6 0 0 1 0-2.3l8.3-8.3a1.6 1.6 0 0 1 2.3 0l5.2 5.2a1.6 1.6 0 0 1 0 2.3L13 20z" /><path d="M9 20h11M8 9l7 7" /></>,
+  text: <><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6" /></>,
+  note: <><path d="M4.5 4.5h15v9l-6 6h-9z" /><path d="M19.5 13.5h-6v6" /></>,
+  line: <path d="M5 19 19 5" />,
+  "arrow-up-right": <><path d="M6 18 18 6" /><path d="M9.5 6H18v8.5" /></>,
+  square: <rect x="4" y="4" width="16" height="16" rx="2" />,
+  circle: <ellipse cx="12" cy="12" rx="9" ry="7.5" />,
+  undo: <><path d="M4 9h10a5.5 5.5 0 0 1 0 11h-4" /><path d="M8 5 4 9l4 4" /></>,
+  redo: <><path d="M20 9H10a5.5 5.5 0 0 0 0 11h4" /><path d="m16 5 4 4-4 4" /></>,
+  unlock: <><rect x="4.5" y="10" width="15" height="10.5" rx="2" /><path d="M8 10V7.5a4 4 0 0 1 7.8-1.3" /></>,
 };
 
 export function Icon({

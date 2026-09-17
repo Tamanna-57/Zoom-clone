@@ -10,6 +10,7 @@ The server never touches media: it only relays SDP and ICE between browsers.
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -53,6 +54,93 @@ MEDIA_STATE_FIELDS = {
     "isHandRaised": "is_hand_raised",
     "isSharing": "is_sharing",
 }
+
+
+# What a whiteboard object is allowed to be. Everything here is checked rather
+# than trusted: the board is replayed verbatim to every late joiner, so a single
+# bad item would be served to the whole room for the rest of the call.
+BOARD_KINDS = {"pen", "highlighter", "line", "arrow", "rect", "ellipse", "text", "note"}
+# Freehand keeps its whole path; every other shape is defined by two corners.
+BOARD_PATH_KINDS = {"pen", "highlighter"}
+BOARD_TEXT_KINDS = {"text", "note"}
+BOARD_MAX_PATH_POINTS = 500
+BOARD_MAX_TEXT = 500
+BOARD_MAX_ITEMS = 2000
+# How many ids one delete may name. An eraser dragged across a busy board is the
+# reason this is not 1, and the cap is the reason it is not unbounded.
+BOARD_MAX_DELETE = 200
+_HEX_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_BOARD_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _clamp_unit(value: float) -> float:
+    """Board coordinates run 0..1, so the same drawing lands on every screen."""
+    return min(max(value, 0.0), 1.0)
+
+
+def _board_points(raw: object, kind: str) -> list[list[float]] | None:
+    if not isinstance(raw, list):
+        return None
+    points: list[list[float]] = []
+    for pair in raw[:BOARD_MAX_PATH_POINTS]:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        try:
+            x, y = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError):
+            continue
+        # NaN survives clamping (every comparison against it is false), so it
+        # has to be dropped by hand or it reaches a canvas as an invisible mark.
+        if x != x or y != y:
+            continue
+        points.append([_clamp_unit(x), _clamp_unit(y)])
+    if len(points) < 2:
+        return None
+    # A shape is its two corners. Trimming here means the move handler below can
+    # shift any item the same way without caring what kind it is.
+    return points if kind in BOARD_PATH_KINDS else [points[0], points[-1]]
+
+
+def _clean_board_item(raw: object, connection: Connection) -> dict | None:
+    """Narrow one untrusted item off the socket into something safe to store."""
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind")
+    if kind not in BOARD_KINDS:
+        return None
+    item_id = raw.get("id")
+    if not isinstance(item_id, str) or not _BOARD_ID.fullmatch(item_id):
+        return None
+    points = _board_points(raw.get("points"), kind)
+    if points is None:
+        return None
+    colour = raw.get("color")
+    if not isinstance(colour, str) or not _HEX_COLOUR.fullmatch(colour):
+        return None
+    try:
+        width = int(raw.get("width", 5))
+    except (TypeError, ValueError):
+        return None
+    item = {
+        "id": item_id,
+        "kind": kind,
+        "points": points,
+        "color": colour,
+        # Per-mille of the board's height rather than pixels, so a line keeps
+        # its weight on a laptop, a phone and an exported PNG alike.
+        "width": min(max(width, 1), 80),
+        # Authorship is stamped here and never read off the wire. It decides who
+        # may later move or erase the mark, so a client that could set it could
+        # both forge someone else's signature and take over their drawing.
+        "by": connection.display_name,
+        "byConnection": connection.id,
+    }
+    if kind in BOARD_TEXT_KINDS:
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        item["text"] = text[:BOARD_MAX_TEXT]
+    return item
 
 
 @router.websocket("/ws/meetings/{code}")
@@ -144,11 +232,12 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 "self": connection.peer_payload(),
                 "peers": existing_peers,
                 # Whoever joins late still needs the board and the open ballots.
-                "whiteboard": list(room.strokes) if room else [],
+                "whiteboard": list(room.board.values()) if room else [],
                 # A board someone is already sharing opens for the newcomer too.
                 "whiteboardOpen": bool(room.whiteboard_open) if room else False,
                 "whiteboardBy": room.whiteboard_by if room else None,
                 "whiteboardByConnection": room.whiteboard_by_connection if room else None,
+                "whiteboardLocked": bool(room.board_locked) if room else False,
                 "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
                 "waiting": waiting,
             }
@@ -317,6 +406,10 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
         if room is None:
             return
         action = message.get("action")
+        # Hosts and cohosts moderate the board: they end anyone's share, wipe it,
+        # latch it, and edit marks that are not theirs.
+        moderates = connection.role in ("host", "cohost")
+
         if action == "open":
             # Anyone may put the board up, the same way anyone may share a
             # screen. Re-announcing an already open board is harmless: it just
@@ -334,75 +427,171 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
                 },
             )
             return
+
         if action == "close":
             # Closing ends the session for the room, so only the person who
             # opened it or a host/cohost may do it. Everyone else can hide the
             # panel locally without taking the board away from the others.
-            if (
-                connection.role == "participant"
-                and room.whiteboard_by_connection != connection.id
-            ):
+            if not moderates and room.whiteboard_by_connection != connection.id:
                 return
             room.whiteboard_open = False
             room.whiteboard_by = None
             room.whiteboard_by_connection = None
             # Ending the share ends the drawing with it: the next person to put
             # a board up starts on a blank one rather than someone else's notes.
-            room.strokes.clear()
+            room.board.clear()
+            room.board_locked = False
             await hub.broadcast(
                 meeting.code,
                 {"type": "whiteboard", "action": "close", "by": connection.display_name},
             )
             return
+
         if action == "clear":
-            # Same rule as the polls below. The UI hides this from participants,
-            # but hiding a button proves nothing: anyone could send this message
-            # straight down the socket and wipe the board mid-meeting.
-            if connection.role == "participant":
+            # The UI hides this from participants, but hiding a button proves
+            # nothing: anyone could send this message straight down the socket
+            # and wipe the board mid-meeting.
+            if not moderates:
                 return
-            room.strokes.clear()
+            room.board.clear()
             await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "clear"})
             return
-        if action != "stroke":
-            return
-        stroke = message.get("stroke")
-        if not isinstance(stroke, dict):
-            return
-        # Drawing implicitly shares the board: a stroke on a closed board would
-        # otherwise land somewhere nobody is looking.
-        if not room.whiteboard_open:
-            room.whiteboard_open = True
-            room.whiteboard_by = connection.display_name
-            room.whiteboard_by_connection = connection.id
+
+        if action == "lock":
+            if not moderates:
+                return
+            room.board_locked = bool(message.get("locked"))
             await hub.broadcast(
                 meeting.code,
                 {
                     "type": "whiteboard",
-                    "action": "open",
+                    "action": "lock",
+                    "locked": room.board_locked,
                     "by": connection.display_name,
-                    "byConnection": connection.id,
                 },
             )
-        points = stroke.get("points")
-        if not isinstance(points, list) or len(points) < 2:
             return
-        clean = {
-            # Points are normalised 0..1 so every screen size draws the same
-            # picture; clamping here keeps a hostile client inside the canvas.
-            "points": [
-                [min(max(float(x), 0.0), 1.0), min(max(float(y), 0.0), 1.0)]
-                for x, y in (pair for pair in points[:500] if isinstance(pair, list) and len(pair) == 2)
-            ],
-            "color": str(stroke.get("color", "#ffffff"))[:16],
-            "width": min(max(int(stroke.get("width", 3)), 1), 40),
-            "by": connection.display_name,
-        }
-        if len(clean["points"]) < 2:
+
+        if action == "cursor":
+            # Presence, not content. Seeing where the other pens are is most of
+            # what makes a shared board feel shared, but a pointer a second old
+            # is worthless, so this is never stored and never replayed.
+            try:
+                x = float(message.get("x"))
+                y = float(message.get("y"))
+            except (TypeError, ValueError):
+                return
+            if x != x or y != y:
+                return
+            await hub.broadcast(
+                meeting.code,
+                {
+                    "type": "whiteboard",
+                    "action": "cursor",
+                    "connectionId": connection.id,
+                    "by": connection.display_name,
+                    "color": connection.avatar_color,
+                    "x": _clamp_unit(x),
+                    "y": _clamp_unit(y),
+                },
+                exclude=connection.id,
+            )
             return
-        # A long call should not grow an unbounded board in memory.
-        room.strokes.append(clean)
-        del room.strokes[:-2000]
-        await hub.broadcast(meeting.code, {"type": "whiteboard", "action": "stroke", "stroke": clean})
+
+        if action not in ("add", "move", "delete"):
+            return
+        # While the host has the board latched, everyone else is a spectator.
+        if room.board_locked and not moderates:
+            return
+
+        if action == "add":
+            item = _clean_board_item(message.get("item"), connection)
+            if item is None:
+                return
+            # Drawing implicitly shares the board: a mark on a closed board would
+            # otherwise land somewhere nobody is looking.
+            if not room.whiteboard_open:
+                room.whiteboard_open = True
+                room.whiteboard_by = connection.display_name
+                room.whiteboard_by_connection = connection.id
+                await hub.broadcast(
+                    meeting.code,
+                    {
+                        "type": "whiteboard",
+                        "action": "open",
+                        "by": connection.display_name,
+                        "byConnection": connection.id,
+                    },
+                )
+            # An id that is already taken is a replay or a collision, not an
+            # edit: re-keying it here would silently overwrite someone's mark.
+            if item["id"] in room.board:
+                return
+            room.board[item["id"]] = item
+            # A long call should not grow an unbounded board in memory. The
+            # oldest marks go first, which is also the least surprising.
+            while len(room.board) > BOARD_MAX_ITEMS:
+                del room.board[next(iter(room.board))]
+            await hub.broadcast(
+                meeting.code, {"type": "whiteboard", "action": "add", "item": item}
+            )
+            return
+
+        if action == "move":
+            item_id = message.get("id")
+            item = room.board.get(item_id) if isinstance(item_id, str) else None
+            if item is None:
+                return
+            if not moderates and item["byConnection"] != connection.id:
+                return
+            try:
+                dx = float(message.get("dx", 0.0))
+                dy = float(message.get("dy", 0.0))
+            except (TypeError, ValueError):
+                return
+            if dx != dx or dy != dy:
+                return
+            xs = [p[0] for p in item["points"]]
+            ys = [p[1] for p in item["points"]]
+            # Clamp the whole move rather than each point, so a shape dragged off
+            # the edge stops at the edge instead of collapsing against it.
+            dx = min(max(dx, -min(xs)), 1.0 - max(xs))
+            dy = min(max(dy, -min(ys)), 1.0 - max(ys))
+            item["points"] = [[x + dx, y + dy] for x, y in item["points"]]
+            # The result travels, not the delta: a delta the server clamped is
+            # not reproducible, and every client has to land on the same picture.
+            await hub.broadcast(
+                meeting.code,
+                {
+                    "type": "whiteboard",
+                    "action": "move",
+                    "id": item["id"],
+                    "points": item["points"],
+                },
+            )
+            return
+
+        # action == "delete"
+        ids = message.get("ids")
+        if not isinstance(ids, list):
+            return
+        removed: list[str] = []
+        for item_id in ids[:BOARD_MAX_DELETE]:
+            if not isinstance(item_id, str):
+                continue
+            item = room.board.get(item_id)
+            if item is None:
+                continue
+            # You rub out your own marks; everyone else's are the host's to take.
+            if not moderates and item["byConnection"] != connection.id:
+                continue
+            del room.board[item_id]
+            removed.append(item_id)
+        if not removed:
+            return
+        await hub.broadcast(
+            meeting.code, {"type": "whiteboard", "action": "delete", "ids": removed}
+        )
         return
 
     if kind == "poll":

@@ -73,16 +73,21 @@ class Poll:
 class Room:
     code: str
     connections: dict[str, Connection] = field(default_factory=dict)
-    # Whiteboard strokes and polls live as long as the call does. Both are
-    # replayed to late joiners so everyone sees the same board and ballot.
-    strokes: list[dict] = field(default_factory=list)
+    # The whiteboard is a list of objects rather than a bitmap: every mark keeps
+    # its own identity, so it can be moved, rubbed out or undone on its own long
+    # after it was drawn. Keyed by id, and a dict keeps insertion order, so this
+    # is also the z-order - later marks draw on top.
+    board: dict[str, dict] = field(default_factory=dict)
     polls: dict[str, Poll] = field(default_factory=dict)
     # The board is shared, not personal: one person opens it and everyone's
-    # panel follows. These track who started the session so the opener (and any
+    # stage follows. These track who started the session so the opener (and any
     # host) can end it for the room, and so late joiners land on an open board.
     whiteboard_open: bool = False
     whiteboard_by: str | None = None
     whiteboard_by_connection: str | None = None
+    # Zoom's "who can annotate", as a room-wide latch: while it is on, only the
+    # host and cohosts may change the board. Everyone can still watch it.
+    board_locked: bool = False
 
 
 class Hub:
