@@ -49,6 +49,7 @@ function useSpeaking(stream: MediaStream | null, muted: boolean): boolean {
 
 export function VideoTile({
   stream,
+  streamRevision,
   name,
   color,
   isSelf = false,
@@ -62,6 +63,8 @@ export function VideoTile({
   spotlight = false,
 }: {
   stream: MediaStream | null;
+  /** Bumped as tracks land, so a stream that gained audio re-attaches. */
+  streamRevision?: number;
   name: string;
   color: string;
   isSelf?: boolean;
@@ -80,7 +83,10 @@ export function VideoTile({
 
   useEffect(() => {
     const element = videoRef.current;
-    if (!element || element.srcObject === stream) return;
+    if (!element) return;
+    // Re-attach on a changed track count as well as a changed stream: Safari
+    // does not render a track that was added after srcObject was assigned, so
+    // "same object, now with audio" still has to be re-attached.
     element.srcObject = stream;
     if (!stream) return;
 
@@ -101,7 +107,7 @@ export function VideoTile({
     return () => {
       cancelled = true;
     };
-  }, [stream, isSelf]);
+  }, [stream, streamRevision, isSelf]);
 
   function unblockAudio() {
     const element = videoRef.current;
