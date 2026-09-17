@@ -141,6 +141,10 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 "peers": existing_peers,
                 # Whoever joins late still needs the board and the open ballots.
                 "whiteboard": list(room.strokes) if room else [],
+                # A board someone is already sharing opens for the newcomer too.
+                "whiteboardOpen": bool(room.whiteboard_open) if room else False,
+                "whiteboardBy": room.whiteboard_by if room else None,
+                "whiteboardByConnection": room.whiteboard_by_connection if room else None,
                 "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
                 "waiting": waiting,
             }
@@ -293,6 +297,40 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
         if room is None:
             return
         action = message.get("action")
+        if action == "open":
+            # Anyone may put the board up, the same way anyone may share a
+            # screen. Re-announcing an already open board is harmless: it just
+            # nudges any client that missed the first broadcast.
+            room.whiteboard_open = True
+            room.whiteboard_by = connection.display_name
+            room.whiteboard_by_connection = connection.id
+            await hub.broadcast(
+                meeting.code,
+                {
+                    "type": "whiteboard",
+                    "action": "open",
+                    "by": connection.display_name,
+                    "byConnection": connection.id,
+                },
+            )
+            return
+        if action == "close":
+            # Closing ends the session for the room, so only the person who
+            # opened it or a host/cohost may do it. Everyone else can hide the
+            # panel locally without taking the board away from the others.
+            if (
+                connection.role == "participant"
+                and room.whiteboard_by_connection != connection.id
+            ):
+                return
+            room.whiteboard_open = False
+            room.whiteboard_by = None
+            room.whiteboard_by_connection = None
+            await hub.broadcast(
+                meeting.code,
+                {"type": "whiteboard", "action": "close", "by": connection.display_name},
+            )
+            return
         if action == "clear":
             # Same rule as the polls below. The UI hides this from participants,
             # but hiding a button proves nothing: anyone could send this message
@@ -307,6 +345,21 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
         stroke = message.get("stroke")
         if not isinstance(stroke, dict):
             return
+        # Drawing implicitly shares the board: a stroke on a closed board would
+        # otherwise land somewhere nobody is looking.
+        if not room.whiteboard_open:
+            room.whiteboard_open = True
+            room.whiteboard_by = connection.display_name
+            room.whiteboard_by_connection = connection.id
+            await hub.broadcast(
+                meeting.code,
+                {
+                    "type": "whiteboard",
+                    "action": "open",
+                    "by": connection.display_name,
+                    "byConnection": connection.id,
+                },
+            )
         points = stroke.get("points")
         if not isinstance(points, list) or len(points) < 2:
             return

@@ -6,6 +6,13 @@ import { getToken } from "./api";
 import { WS_URL } from "./config";
 import type { ChatMessage, PeerInfo, Poll, ServerEvent, Stroke, TranscriptSegment } from "./types";
 
+/** The room-wide whiteboard share: who put the board up, if anyone. */
+export interface WhiteboardSession {
+  open: boolean;
+  by: string | null;
+  byConnection: string | null;
+}
+
 export interface RemotePeer extends PeerInfo {
   stream: MediaStream | null;
   /** Bumped as tracks land so a tile re-renders when Safari adds audio late. */
@@ -86,6 +93,13 @@ export function useMeetingRoom({
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
+  // Who, if anyone, is currently sharing the whiteboard with the room. Held
+  // server-side so every tab agrees and late joiners land on the open board.
+  const [whiteboard, setWhiteboard] = useState<WhiteboardSession>({
+    open: false,
+    by: null,
+    byConnection: null,
+  });
   const [polls, setPolls] = useState<Poll[]>([]);
   const [waiting, setWaiting] = useState<WaitingKnock[]>([]);
 
@@ -321,6 +335,11 @@ export function useMeetingRoom({
             ),
           );
           setStrokes(message.whiteboard ?? []);
+          setWhiteboard({
+            open: Boolean(message.whiteboardOpen),
+            by: message.whiteboardBy ?? null,
+            byConnection: message.whiteboardByConnection ?? null,
+          });
           setPolls(message.polls ?? []);
           setWaiting(message.waiting ?? []);
           // The peers who were already here offer to the newcomer, so there is
@@ -392,6 +411,10 @@ export function useMeetingRoom({
         }
         case "whiteboard": {
           if (message.action === "clear") setStrokes([]);
+          else if (message.action === "open")
+            setWhiteboard({ open: true, by: message.by, byConnection: message.byConnection });
+          else if (message.action === "close")
+            setWhiteboard({ open: false, by: null, byConnection: null });
           else setStrokes((current) => [...current, message.stroke]);
           break;
         }
@@ -458,6 +481,7 @@ export function useMeetingRoom({
       pendingStreams.clear();
       setPeers({});
       setStrokes([]);
+      setWhiteboard({ open: false, by: null, byConnection: null });
       setPolls([]);
       setWaiting([]);
       setConnected(false);
@@ -486,6 +510,8 @@ export function useMeetingRoom({
         send({ type: "transcript", text, startMs, endMs }),
       sendStroke: (stroke: Stroke) => send({ type: "whiteboard", action: "stroke", stroke }),
       clearBoard: () => send({ type: "whiteboard", action: "clear" }),
+      openBoard: () => send({ type: "whiteboard", action: "open" }),
+      closeBoard: () => send({ type: "whiteboard", action: "close" }),
       createPoll: (question: string, options: string[]) =>
         send({ type: "poll", action: "create", question, options }),
       votePoll: (pollId: string, choice: number) =>
@@ -498,5 +524,5 @@ export function useMeetingRoom({
     [send, replaceVideoTrack],
   );
 
-  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, polls, waiting, ...api };
+  return { connected, self, peers: Object.values(peers), messages, segments, reactions, strokes, whiteboard, polls, waiting, ...api };
 }
