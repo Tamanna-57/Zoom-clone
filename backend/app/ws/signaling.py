@@ -43,6 +43,10 @@ WS_REPLACED_ELSEWHERE = 4409
 # retry: one waits for the host, the other is over.
 WS_NOT_ADMITTED = 4403
 
+# Sent when the socket says it is leaving on purpose, so the browser retires it
+# instead of treating the close as a drop worth reconnecting through.
+WS_NORMAL = 1000
+
 MEDIA_STATE_FIELDS = {
     "isMuted": "is_muted",
     "isVideoOn": "is_video_on",
@@ -290,6 +294,22 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
                 },
             },
         )
+        return
+
+    if kind == "leave":
+        # Someone pressing Leave should vanish from everyone's grid at once.
+        # Waiting for the browser's socket teardown costs a couple of seconds,
+        # so announce the departure the moment the intent arrives and close.
+        await hub.broadcast(
+            meeting.code,
+            {"type": "peer-left", "connectionId": connection.id, "userId": connection.user_id},
+            exclude=connection.id,
+        )
+        try:
+            await connection.websocket.close(code=WS_NORMAL)
+        except Exception:  # pragma: no cover - socket already gone
+            pass
+        await hub.remove(meeting.code, connection.id)
         return
 
     if kind == "whiteboard":

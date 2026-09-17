@@ -492,6 +492,21 @@ export function useMeetingRoom({
     };
   }, [code, enabled, closeConnection, handleSignal, offerTo, send]);
 
+  // Closing the tab is a departure too. `pagehide` is the last moment a
+  // message still gets out, and it fires where `beforeunload` does not (mobile
+  // Safari, bfcache), so the room learns immediately either way.
+  useEffect(() => {
+    if (!enabled) return;
+    const announce = () => {
+      const socket = socketRef.current;
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify({ type: "leave" }));
+      socket.close(WS_NORMAL);
+    };
+    window.addEventListener("pagehide", announce);
+    return () => window.removeEventListener("pagehide", announce);
+  }, [enabled]);
+
   /** Swap the outgoing video (camera <-> screen) without renegotiating. */
   const replaceVideoTrack = useCallback((track: MediaStreamTrack | null) => {
     // Remembered so peers that connect *after* this point are given the same
@@ -514,6 +529,17 @@ export function useMeetingRoom({
         send({ type: "transcript", text, startMs, endMs }),
       sendStroke: (stroke: Stroke) => send({ type: "whiteboard", action: "stroke", stroke }),
       clearBoard: () => send({ type: "whiteboard", action: "clear" }),
+      /** Announce the departure and hang up now, rather than letting the socket
+       *  die on its own during navigation: the other grids drop the tile as
+       *  soon as the server hears it, not a few seconds later. */
+      leaveNow: () => {
+        send({ type: "leave" });
+        const socket = socketRef.current;
+        socketRef.current = null;
+        socket?.close(WS_NORMAL);
+        connectionsRef.current.forEach((connection) => connection.close());
+        connectionsRef.current.clear();
+      },
       openBoard: () => send({ type: "whiteboard", action: "open" }),
       closeBoard: () => send({ type: "whiteboard", action: "close" }),
       createPoll: (question: string, options: string[]) =>

@@ -26,7 +26,7 @@ import { useMeetingRoom } from "@/lib/useMeetingRoom";
 import type { JoinResponse, Meeting } from "@/lib/types";
 
 type Phase = "loading" | "prejoin" | "waiting" | "live" | "over";
-type Panel = "chat" | "people" | "notes" | "whiteboard" | "polls" | null;
+type Panel = "chat" | "people" | "notes" | "polls" | null;
 
 /** One video square: the local camera or one remote peer. */
 interface Tile {
@@ -251,36 +251,18 @@ export default function MeetingPage() {
     }
   }, [room.messages.length, panel]);
 
-  // The whiteboard is shared, not personal: when anyone puts the board up the
-  // panel opens for everyone, and when the share ends it closes for everyone.
+  // The whiteboard is a share, like a screen: it takes the stage for everyone
+  // in the call rather than opening a panel on one person's screen.
   const boardOpen = room.whiteboard.open;
-  useEffect(() => {
-    if (boardOpen) setPanel("whiteboard");
-    else setPanel((current) => (current === "whiteboard" ? null : current));
-  }, [boardOpen]);
-
+  const boardIsMine = room.whiteboard.byConnection === room.self?.connectionId;
   // Ending the share belongs to whoever started it, plus the host and cohosts.
   const canEndBoard =
-    room.whiteboard.open &&
-    (isHost ||
-      joinData?.participant.role === "cohost" ||
-      room.whiteboard.byConnection === room.self?.connectionId);
+    boardOpen && (isHost || joinData?.participant.role === "cohost" || boardIsMine);
 
   function toggleWhiteboard() {
-    // Not shared yet: put it up for the whole room.
-    if (!room.whiteboard.open) {
-      room.openBoard();
-      setPanel("whiteboard");
-      return;
-    }
-    // Shared but hidden on this screen (a participant closed their panel):
-    // bring it back without touching anyone else's view.
-    if (panel !== "whiteboard") {
-      setPanel("whiteboard");
-      return;
-    }
-    if (canEndBoard) room.closeBoard();
-    else setPanel(null);
+    if (!boardOpen) room.openBoard();
+    else if (canEndBoard) room.closeBoard();
+    else notify({ kind: "info", title: `${room.whiteboard.by ?? "Someone"} is sharing the whiteboard` });
   }
 
   // Someone in the waiting room holds no meeting socket — the server refuses it
@@ -439,16 +421,23 @@ export default function MeetingPage() {
     }
   }
 
+  // Held on its own so the callback below keeps a stable identity: `room` is a
+  // fresh object every render, `room.leaveNow` is not.
+  const { leaveNow } = room;
   const leave = useCallback(async () => {
-    await api.leaveMeeting(code).catch(() => undefined);
+    // Tell the room first: everyone else's grid updates while this browser is
+    // still working through the REST call and the navigation.
+    leaveNow();
     stream?.getTracks().forEach((track) => track.stop());
+    void api.leaveMeeting(code).catch(() => undefined);
     router.push("/home");
-  }, [code, stream, router]);
+  }, [code, stream, router, leaveNow]);
 
   async function endForAll() {
     const finished = recordingId;
     if (finished) await stopRecording();
     await api.endMeeting(code).catch(() => undefined);
+    leaveNow();
     stream?.getTracks().forEach((track) => track.stop());
     // Land on the recap that was just written, which is what a host wants next.
     router.push(finished ? `/recordings/${finished}` : "/home");
@@ -632,7 +621,47 @@ export default function MeetingPage() {
 
       <div className="relative flex min-h-0 flex-1">
         <main className="relative min-w-0 flex-1 p-3">
-          {layout === "gallery" ? (
+          {boardOpen ? (
+            /* A shared board owns the stage, the way a shared screen does, and
+               the call shrinks to a filmstrip underneath it. */
+            <div className="flex h-full flex-col gap-3">
+              <section className="flex min-h-0 flex-1 flex-col rounded-xl bg-ink-900 p-3 ring-1 ring-white/10">
+                <header className="mb-2 flex items-center gap-2">
+                  <Icon name="pencil" size={15} />
+                  <h2 className="text-sm font-semibold">Whiteboard</h2>
+                  <span className="truncate text-xs text-ink-300">
+                    {boardIsMine ? "You are sharing" : `Shared by ${room.whiteboard.by ?? "a participant"}`}
+                  </span>
+                  {canEndBoard && (
+                    <button
+                      onClick={() => room.closeBoard()}
+                      className="ml-auto rounded-md bg-white/10 px-2.5 py-1 text-xs font-medium transition hover:bg-white/20"
+                    >
+                      Stop sharing
+                    </button>
+                  )}
+                </header>
+                <div className="min-h-0 flex-1">
+                  <Whiteboard
+                    strokes={room.strokes}
+                    onStroke={room.sendStroke}
+                    onClear={room.clearBoard}
+                    canClear={isHost || joinData?.participant.role === "cohost"}
+                  />
+                </div>
+              </section>
+              <div className="flex h-24 shrink-0 gap-3 overflow-x-auto sm:h-28">
+                {tiles.map((tile) => (
+                  <VideoTile
+                    key={tile.id}
+                    {...tile}
+                    isSelf={tile.id === "self"}
+                    className="aspect-video h-full shrink-0"
+                  />
+                ))}
+              </div>
+            </div>
+          ) : layout === "gallery" ? (
             <div className="grid h-full place-content-center">
               <div className={`grid w-full gap-3 ${gridColumns} ${tileWidth}`}>
                 {tiles.map((tile) => (
@@ -707,28 +736,6 @@ export default function MeetingPage() {
                 onInvite={() => setShowInfo(true)}
               />
             )}
-            {panel === "whiteboard" && (
-              <SidePanel
-                title={
-                  room.whiteboard.by && room.whiteboard.byConnection !== room.self?.connectionId
-                    ? `Whiteboard · shared by ${room.whiteboard.by}`
-                    : "Whiteboard"
-                }
-                // Closing the board ends the share for the room, so only the
-                // person sharing it (or a host) may do that; anyone else just
-                // hides their own panel.
-                onClose={() => (canEndBoard ? room.closeBoard() : setPanel(null))}
-              >
-                <div className="h-[70vh] p-3 md:h-full">
-                  <Whiteboard
-                    strokes={room.strokes}
-                    onStroke={room.sendStroke}
-                    onClear={room.clearBoard}
-                    canClear={isHost || joinData?.participant.role === "cohost"}
-                  />
-                </div>
-              </SidePanel>
-            )}
             {panel === "polls" && (
               <SidePanel title="Polls" onClose={() => setPanel(null)}>
                 <div className="p-3">
@@ -779,6 +786,7 @@ export default function MeetingPage() {
         onToggleCaptions={() => (captions.listening ? captions.disable() : captions.enable())}
         onReaction={(emoji) => room.sendReaction(emoji)}
         onOpenWhiteboard={toggleWhiteboard}
+        isWhiteboardOpen={boardOpen}
         onOpenPolls={() => setPanel((current) => (current === "polls" ? null : "polls"))}
         onOpenPanel={(next) => setPanel((current) => (current === next ? null : next))}
         onLeave={() => void leave()}
