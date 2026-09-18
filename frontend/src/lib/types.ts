@@ -230,6 +230,21 @@ export interface BoardItem {
   byConnection: string;
 }
 
+/**
+ * Zoom's Security menu, as room-wide rules the host sets and the server keeps.
+ *
+ * Note there is no "pin" here: a pin is personal and never leaves the viewer's
+ * own screen, so it is local state. A spotlight is the host choosing for
+ * everyone, which is why that one *is* shared.
+ */
+export interface MeetingSecurity {
+  /** No newcomers. People already in the room keep their seat. */
+  locked: boolean;
+  allowShare: boolean;
+  allowChat: boolean;
+  allowUnmute: boolean;
+}
+
 /** Where someone else's pen is right now. Presence only — never stored. */
 export interface BoardCursor {
   connectionId: string;
@@ -259,6 +274,8 @@ export type ServerEvent =
       whiteboardBy?: string | null;
       whiteboardByConnection?: string | null;
       whiteboardLocked?: boolean;
+      security?: MeetingSecurity | null;
+      spotlight?: string | null;
       polls?: Poll[];
       waiting?: WaitingParticipant[];
     }
@@ -273,6 +290,10 @@ export type ServerEvent =
   | { type: "whiteboard"; action: "close"; by: string }
   | { type: "whiteboard"; action: "cursor"; connectionId: string; by: string; color: string; x: number; y: number }
   | { type: "poll"; poll: Poll }
+  | ({ type: "security"; action: "set"; by: string } & MeetingSecurity)
+  | { type: "security"; action: "spotlight"; connectionId: string | null; by: string }
+  /** The server would not take a media change — put the hardware back. */
+  | { type: "state-refused"; isMuted?: boolean; isSharing?: boolean }
   | { type: "peer-joined"; peer: PeerInfo }
   | { type: "peer-left"; connectionId: string; userId: number }
   | { type: "peer-state"; peer: PeerInfo }

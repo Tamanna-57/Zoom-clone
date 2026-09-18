@@ -18,6 +18,10 @@ export function ParticipantsPanel({
   onMute,
   onRemove,
   onCohost,
+  onPin,
+  onSpotlight,
+  pinnedId,
+  spotlightId,
   onAdmit,
   onDeny,
   onInvite,
@@ -35,6 +39,11 @@ export function ParticipantsPanel({
   onMute: (participantId: number) => void;
   onRemove: (participantId: number) => void;
   onCohost: (participantId: number) => void;
+  /** Pinning is personal; spotlighting is the host choosing for the room. */
+  onPin: (connectionId: string) => void;
+  onSpotlight: (connectionId: string) => void;
+  pinnedId: string | null;
+  spotlightId: string | null;
   onAdmit: (participantId: number) => void;
   onDeny: (participantId: number) => void;
   onInvite: () => void;
@@ -147,7 +156,7 @@ export function ParticipantsPanel({
               <Icon name={peer.isMuted ? "mic-off" : "mic"} size={15} className={peer.isMuted ? "text-zoom-red" : "text-ink-300"} />
               <Icon name={peer.isVideoOn ? "video" : "video-off"} size={15} className={peer.isVideoOn ? "text-ink-300" : "text-zoom-red"} />
 
-              {isHost && !isSelf && (
+              {!isSelf && (
                 <button
                   onClick={() => setMenu(menu === peer.connectionId ? null : peer.connectionId)}
                   className="rounded p-1 text-ink-300 transition hover:bg-white/10 hover:text-white"
@@ -158,16 +167,30 @@ export function ParticipantsPanel({
               )}
 
               {menu === peer.connectionId && (
-                <div className="animate-slide-in absolute right-2 top-10 z-20 w-44 rounded-xl border border-white/10 bg-ink-800 p-1.5 text-sm shadow-2xl">
-                  <button onClick={() => { onMute(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
-                    Mute
+                <div className="animate-slide-in absolute right-2 top-10 z-20 w-48 rounded-xl border border-white/10 bg-ink-800 p-1.5 text-sm shadow-2xl">
+                  <button onClick={() => { onPin(peer.connectionId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
+                    {pinnedId === peer.connectionId ? "Unpin" : "Pin for me"}
                   </button>
-                  <button onClick={() => { onCohost(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
-                    {peer.role === "cohost" ? "Remove co-host" : "Make co-host"}
-                  </button>
-                  <button onClick={() => { onRemove(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-zoom-red transition hover:bg-zoom-red/15">
-                    Remove
-                  </button>
+                  {isHost && (
+                    <button onClick={() => { onSpotlight(peer.connectionId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
+                      {spotlightId === peer.connectionId ? "Remove spotlight" : "Spotlight for everyone"}
+                    </button>
+                  )}
+                  {isHost && (
+                    <button onClick={() => { onMute(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
+                      Mute
+                    </button>
+                  )}
+                  {isHost && (
+                    <button onClick={() => { onCohost(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-white transition hover:bg-white/10">
+                      {peer.role === "cohost" ? "Remove co-host" : "Make co-host"}
+                    </button>
+                  )}
+                  {isHost && (
+                    <button onClick={() => { onRemove(peer.participantId); setMenu(null); }} className="w-full rounded-lg px-3 py-2 text-left text-zoom-red transition hover:bg-zoom-red/15">
+                      Remove
+                    </button>
+                  )}
                 </div>
               )}
             </div>

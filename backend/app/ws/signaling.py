@@ -238,6 +238,10 @@ async def meeting_socket(websocket: WebSocket, code: str, token: str = "") -> No
                 "whiteboardBy": room.whiteboard_by if room else None,
                 "whiteboardByConnection": room.whiteboard_by_connection if room else None,
                 "whiteboardLocked": bool(room.board_locked) if room else False,
+                # The Security menu and the spotlight, so a late joiner arrives
+                # under the same rules and looking at the same person.
+                "security": room.security_payload() if room else None,
+                "spotlight": room.spotlight if room else None,
                 "polls": [p.payload(user.id) for p in room.polls.values()] if room else [],
                 "waiting": waiting,
             }
@@ -287,14 +291,34 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
         return
 
     if kind == "state":
+        room = hub.room(meeting.code)
+        moderates = connection.role in ("host", "cohost")
         participant = db.get(Participant, connection.participant_id)
+        refused: dict[str, bool] = {}
         for wire_field, column in MEDIA_STATE_FIELDS.items():
-            if wire_field in message:
-                value = bool(message[wire_field])
-                setattr(connection, column, value)
-                if participant is not None:
-                    setattr(participant, column, value)
+            if wire_field not in message:
+                continue
+            value = bool(message[wire_field])
+            # The Security menu is enforced here, not in the browser. Refusing
+            # the change is not enough on its own - the browser has already
+            # turned its own microphone on, so it is told to put it back.
+            if room is not None and not moderates:
+                if wire_field == "isMuted" and not value and not room.allow_unmute:
+                    refused["isMuted"] = True
+                    continue
+                if wire_field == "isSharing" and value and not room.allow_share:
+                    refused["isSharing"] = False
+                    continue
+            setattr(connection, column, value)
+            if participant is not None:
+                setattr(participant, column, value)
         db.commit()
+        if refused:
+            await hub.send_to(
+                meeting.code,
+                connection.id,
+                {"type": "state-refused", **refused},
+            )
         await hub.broadcast(
             meeting.code,
             {"type": "peer-state", "peer": connection.peer_payload()},
@@ -316,6 +340,10 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
     if kind == "chat":
         body = str(message.get("body", "")).strip()
         if not body:
+            return
+        room = hub.room(meeting.code)
+        # A muted chat still lets the host talk, the way Zoom's does.
+        if room is not None and not room.allow_chat and connection.role == "participant":
             return
         recipient_id = message.get("recipientId")
         recipient = db.get(User, recipient_id) if recipient_id else None
@@ -591,6 +619,63 @@ async def _handle(db, connection: Connection, meeting: Meeting, user: User, mess
             return
         await hub.broadcast(
             meeting.code, {"type": "whiteboard", "action": "delete", "ids": removed}
+        )
+        return
+
+    if kind == "security":
+        room = hub.room(meeting.code)
+        if room is None or connection.role not in ("host", "cohost"):
+            return
+        if message.get("action") == "spotlight":
+            # Spotlight is the host putting one person on everyone's stage. A
+            # null clears it; an id that has since left simply never matches.
+            target = message.get("connectionId")
+            room.spotlight = target if isinstance(target, str) and target else None
+            await hub.broadcast(
+                meeting.code,
+                {
+                    "type": "security",
+                    "action": "spotlight",
+                    "connectionId": room.spotlight,
+                    "by": connection.display_name,
+                },
+            )
+            return
+        if message.get("action") != "set":
+            return
+        for wire_field, attribute in (
+            ("locked", "locked"),
+            ("allowShare", "allow_share"),
+            ("allowChat", "allow_chat"),
+            ("allowUnmute", "allow_unmute"),
+        ):
+            if wire_field in message:
+                setattr(room, attribute, bool(message[wire_field]))
+        # Taking unmute away is not retroactive on its own: whoever is already
+        # unmuted stays that way until the next time they toggle. Zoom mutes
+        # them there and then, so do the same.
+        if not room.allow_unmute:
+            for peer in hub.peers(meeting.code):
+                if peer.role == "participant" and not peer.is_muted:
+                    peer.is_muted = True
+                    row = db.get(Participant, peer.participant_id)
+                    if row is not None:
+                        row.is_muted = True
+                    await hub.broadcast(
+                        meeting.code, {"type": "peer-state", "peer": peer.peer_payload()}
+                    )
+                    await hub.send_to(
+                        meeting.code, peer.id, {"type": "state-refused", "isMuted": True}
+                    )
+            db.commit()
+        await hub.broadcast(
+            meeting.code,
+            {
+                "type": "security",
+                "action": "set",
+                "by": connection.display_name,
+                **room.security_payload(),
+            },
         )
         return
 

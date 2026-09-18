@@ -69,6 +69,17 @@ export default function MeetingPage() {
 
   const [panel, setPanel] = useState<Panel>(null);
   const [layout, setLayout] = useState<"gallery" | "speaker">("gallery");
+  // A pin is personal: it decides who *this* viewer sees on the stage and is
+  // never sent anywhere. The host's spotlight (room.spotlight) outranks it.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  // Zoom's View menu while a screen is being shared. "standard" gives the share
+  // the whole stage with a filmstrip under it; the side-by-side modes put the
+  // people in a column on the right, which is the layout people actually want
+  // when they are talking over a document.
+  const [shareView, setShareView] = useState<"standard" | "side-speaker" | "side-gallery">("standard");
+  // Where the side-by-side divider sits, as a fraction of the stage width.
+  const [splitRatio, setSplitRatio] = useState(0.72);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [showInfo, setShowInfo] = useState(false);
   const [comingSoon, setComingSoon] = useState<string | null>(null);
@@ -79,6 +90,8 @@ export default function MeetingPage() {
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const isHost = Boolean(meeting && user && meeting.host.id === user.id);
+  // Hosts and cohosts run the Security menu and are never bound by it.
+  const canModerate = isHost || joinData?.participant.role === "cohost";
 
   // A co-host, or someone rejoining a meeting they were already admitted to, may
   // read the passcode, so fill it in rather than make them go and find it again.
@@ -203,6 +216,27 @@ export default function MeetingPage() {
     setPhase("over");
   }, [notify]);
 
+  // The host closed the Security menu against something we just did. The
+  // hardware is already on, so put it back and say why - silently reverting
+  // would look like a bug.
+  const handleStateRefused = useCallback(
+    (state: { isMuted?: boolean; isSharing?: boolean }) => {
+      if (state.isMuted) {
+        setMicOn(false);
+        setStream((current) => {
+          current?.getAudioTracks().forEach((track) => (track.enabled = false));
+          return current;
+        });
+        notify({ kind: "info", title: "The host has muted everyone", detail: "You cannot unmute yourself." });
+      }
+      if (state.isSharing === false) {
+        setIsSharing(false);
+        notify({ kind: "info", title: "Only the host can share right now" });
+      }
+    },
+    [notify],
+  );
+
   const room = useMeetingRoom({
     code,
     localStream: stream,
@@ -213,6 +247,7 @@ export default function MeetingPage() {
     onForceMute: handleForceMute,
     onRemoved: handleRemoved,
     onAdmitted: handleAdmitted,
+    onStateRefused: handleStateRefused,
     onReplaced: handleReplaced,
     selfParticipantId: joinData?.participant.id ?? null,
   });
@@ -262,10 +297,13 @@ export default function MeetingPage() {
   // in the call rather than opening a panel on one person's screen.
   const boardOpen = room.whiteboard.open;
   const boardIsMine = room.whiteboard.byConnection === room.self?.connectionId;
-  // Hosts and cohosts moderate the board: they clear it, latch it, and edit
-  // marks that are not theirs. The server enforces all three; this only decides
-  // which controls are worth showing.
-  const canModerateBoard = isHost || joinData?.participant.role === "cohost";
+  // What the host's Security menu currently allows this person to do. The
+  // server enforces every one of these; these only decide what to offer.
+  const canShare = canModerate || room.security.allowShare;
+  const canUnmute = canModerate || room.security.allowUnmute;
+  const canChat = canModerate || room.security.allowChat;
+  // Moderating the board is the same permission, named where it is used.
+  const canModerateBoard = canModerate;
   // Ending the share belongs to whoever started it, plus the host and cohosts.
   const canEndBoard = boardOpen && (canModerateBoard || boardIsMine);
   // Your own pen is already on your screen; the others are the ones worth drawing.
@@ -411,6 +449,12 @@ export default function MeetingPage() {
 
   function toggleMic() {
     const next = !micOn;
+    // The server refuses this anyway; catching it here saves the microphone
+    // being switched on for the moment it takes the refusal to come back.
+    if (next && !canUnmute) {
+      notify({ kind: "info", title: "The host has muted everyone", detail: "You cannot unmute yourself." });
+      return;
+    }
     setMicOn(next);
     stream?.getAudioTracks().forEach((track) => (track.enabled = next));
     room.sendState({ isMuted: !next });
@@ -431,6 +475,10 @@ export default function MeetingPage() {
   }
 
   async function toggleShare() {
+    if (!isSharing && !canShare) {
+      notify({ kind: "info", title: "Only the host can share right now" });
+      return;
+    }
     if (isSharing) {
       room.replaceVideoTrack(cameraTrackRef.current);
       setIsSharing(false);
@@ -619,8 +667,61 @@ export default function MeetingPage() {
     })),
   ];
 
-  // Whoever is presenting owns the stage; otherwise it is the first tile.
-  const stageTile = tiles.find((tile) => tile.id === sharingPeer?.connectionId) ?? tiles[0];
+  // Your own tile is keyed "self" in the grid but carries a connection id like
+  // everyone else's on the wire, and a spotlight travels by connection id - so
+  // the host can spotlight themselves and it lands on the right tile.
+  const connectionIdOf = (tile: Tile) =>
+    tile.id === "self" ? room.self?.connectionId ?? "self" : tile.id;
+
+  // Who owns the stage, in Zoom's order of precedence: the host's spotlight
+  // beats your own pin, a pin beats whoever happens to be presenting, and with
+  // none of those it is the presenter, then simply the first tile.
+  const stageTile =
+    (room.spotlight ? tiles.find((tile) => connectionIdOf(tile) === room.spotlight) : undefined) ??
+    (pinnedId ? tiles.find((tile) => connectionIdOf(tile) === pinnedId) : undefined) ??
+    tiles.find((tile) => tile.id === sharingPeer?.connectionId) ??
+    tiles[0];
+  const someoneIsSharing = Boolean(sharingPeer) || isSharing;
+
+  /** Everything a tile needs to render, plus its pin and spotlight controls. */
+  const tileProps = (tile: Tile) => {
+    const connectionId = connectionIdOf(tile);
+    return {
+      ...tile,
+      isSelf: tile.id === "self",
+      isPinned: pinnedId === connectionId,
+      isSpotlit: room.spotlight === connectionId,
+      onTogglePin: () => togglePin(connectionId),
+      onToggleSpotlight: canModerate ? () => toggleSpotlight(connectionId) : undefined,
+    };
+  };
+
+  function togglePin(id: string) {
+    setPinnedId((current) => (current === id ? null : id));
+    setLayout("speaker");
+  }
+
+  function toggleSpotlight(id: string) {
+    if (!canModerate) return;
+    room.setSpotlight(room.spotlight === id ? null : id);
+  }
+
+  /** Drag the side-by-side divider. Kept between sane bounds so neither side vanishes. */
+  function startSplitDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const stage = event.currentTarget.parentElement;
+    if (!stage) return;
+    const box = stage.getBoundingClientRect();
+    const move = (moveEvent: PointerEvent) => {
+      const ratio = (moveEvent.clientX - box.left) / box.width;
+      setSplitRatio(Math.min(Math.max(ratio, 0.35), 0.85));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }
 
   // Zoom keeps every gallery tile at 16:9 and centres the block, rather than
   // stretching tiles to fill the stage.
@@ -643,6 +744,15 @@ export default function MeetingPage() {
           </p>
         </div>
 
+        {room.security.locked && (
+          <span
+            title="No one new can join"
+            className="ml-2 flex items-center gap-1.5 rounded-full bg-amber-400/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-300"
+          >
+            <Icon name="lock" size={12} /> Locked
+          </span>
+        )}
+
         {recordingId && (
           <span className="ml-2 flex items-center gap-1.5 rounded-full bg-zoom-red/15 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-zoom-red">
             <span className="h-2 w-2 animate-pulse rounded-full bg-zoom-red" /> Rec
@@ -650,6 +760,49 @@ export default function MeetingPage() {
         )}
 
         <div className="ml-auto flex items-center gap-1">
+          {/* Zoom puts the View menu in the top-right, and only while there is
+              something being shared to arrange around. */}
+          {someoneIsSharing && !boardOpen && (
+            <div className="relative">
+              <button
+                onClick={() => setViewMenuOpen((open) => !open)}
+                title="Change the view"
+                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+                  viewMenuOpen ? "bg-white/12 text-white" : "text-ink-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Icon name="spotlight" size={15} /> View
+              </button>
+              {viewMenuOpen && (
+                <div className="animate-slide-in absolute right-0 top-11 z-30 w-60 rounded-xl border border-white/10 bg-ink-800 p-1.5 text-sm shadow-2xl">
+                  {(
+                    [
+                      { key: "standard", label: "Standard", hint: "Share fills the stage" },
+                      { key: "side-speaker", label: "Side-by-side: Speaker", hint: "Share plus one person" },
+                      { key: "side-gallery", label: "Side-by-side: Gallery", hint: "Share plus everyone" },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.key}
+                      onClick={() => {
+                        setShareView(option.key);
+                        setViewMenuOpen(false);
+                      }}
+                      className="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition hover:bg-white/10"
+                    >
+                      <span className="mt-0.5 w-4 shrink-0 text-zoom-blue">
+                        {shareView === option.key && <Icon name="check" size={14} />}
+                      </span>
+                      <span>
+                        <span className="block text-white">{option.label}</span>
+                        <span className="block text-[11px] text-ink-300">{option.hint}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button
             onClick={() => setLayout(layout === "gallery" ? "speaker" : "gallery")}
             title={layout === "gallery" ? "Switch to speaker view" : "Switch to gallery view"}
@@ -705,37 +858,59 @@ export default function MeetingPage() {
               </section>
               <div className="flex h-24 shrink-0 gap-3 overflow-x-auto sm:h-28">
                 {tiles.map((tile) => (
-                  <VideoTile
-                    key={tile.id}
-                    {...tile}
-                    isSelf={tile.id === "self"}
-                    className="aspect-video h-full shrink-0"
-                  />
+                  <VideoTile key={tile.id} {...tileProps(tile)} className="aspect-video h-full shrink-0" />
                 ))}
+              </div>
+            </div>
+          ) : someoneIsSharing && shareView !== "standard" ? (
+            /* Zoom's side-by-side: the shared screen keeps most of the width and
+               the people move into a column on the right, which is what you
+               want when you are talking over a document rather than at it. */
+            <div className="flex h-full gap-0">
+              <div style={{ width: `${splitRatio * 100}%` }} className="min-w-0">
+                <VideoTile {...tileProps(stageTile)} spotlight className="h-full" />
+              </div>
+              <div
+                onPointerDown={startSplitDrag}
+                title="Drag to resize"
+                className="group/split relative w-3 shrink-0 cursor-col-resize"
+              >
+                <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/10 transition group-hover/split:bg-zoom-blue" />
+              </div>
+              <div className="min-w-0 flex-1 overflow-y-auto">
+                {shareView === "side-speaker" ? (
+                  <VideoTile
+                    {...tileProps(tiles.find((tile) => tile.id !== stageTile.id) ?? stageTile)}
+                    className="aspect-video w-full"
+                  />
+                ) : (
+                  <div className="grid gap-2">
+                    {tiles
+                      .filter((tile) => tile.id !== stageTile.id)
+                      .map((tile) => (
+                        <VideoTile key={tile.id} {...tileProps(tile)} className="aspect-video w-full" />
+                      ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : layout === "gallery" ? (
             <div className="grid h-full place-content-center">
               <div className={`grid w-full gap-3 ${gridColumns} ${tileWidth}`}>
                 {tiles.map((tile) => (
-                  <VideoTile key={tile.id} {...tile} isSelf={tile.id === "self"} className="aspect-video" />
+                  <VideoTile key={tile.id} {...tileProps(tile)} className="aspect-video" />
                 ))}
               </div>
             </div>
           ) : (
             <div className="flex h-full flex-col gap-3">
-              <VideoTile {...stageTile} isSelf={stageTile.id === "self"} spotlight className="min-h-0 flex-1" />
+              <VideoTile {...tileProps(stageTile)} spotlight className="min-h-0 flex-1" />
               {tiles.length > 1 && (
                 <div className="flex h-28 shrink-0 gap-3 overflow-x-auto">
                   {tiles
                     .filter((tile) => tile.id !== stageTile.id)
                     .map((tile) => (
-                      <VideoTile
-                        key={tile.id}
-                        {...tile}
-                        isSelf={tile.id === "self"}
-                        className="aspect-video h-full shrink-0"
-                      />
+                      <VideoTile key={tile.id} {...tileProps(tile)} className="aspect-video h-full shrink-0" />
                     ))}
                 </div>
               )}
@@ -767,6 +942,7 @@ export default function MeetingPage() {
                 selfUserId={user?.id ?? 0}
                 onSend={(body, recipientId) => room.sendChat(body, recipientId)}
                 onClose={() => setPanel(null)}
+                canChat={canChat}
               />
             )}
             {panel === "people" && (
@@ -782,6 +958,10 @@ export default function MeetingPage() {
                 waiting={room.waiting}
                 waitingRoomOn={Boolean(meeting?.waiting_room)}
                 onToggleWaitingRoom={(on) => void setWaitingRoom(on)}
+                onPin={togglePin}
+                onSpotlight={toggleSpotlight}
+                pinnedId={pinnedId}
+                spotlightId={room.spotlight}
                 onAdmit={(id) => void api.admitParticipant(code, id)}
                 onAdmitAll={() =>
                   void Promise.all(
@@ -847,6 +1027,9 @@ export default function MeetingPage() {
         onReaction={(emoji) => room.sendReaction(emoji)}
         onOpenWhiteboard={toggleWhiteboard}
         isWhiteboardOpen={boardOpen}
+        security={room.security}
+        onSecurityChange={room.setSecurity}
+        canShare={canShare}
         onOpenPolls={() => setPanel((current) => (current === "polls" ? null : "polls"))}
         onOpenPanel={(next) => setPanel((current) => (current === next ? null : next))}
         onLeave={() => void leave()}

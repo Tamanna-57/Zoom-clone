@@ -4,7 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getToken } from "./api";
 import { WS_URL } from "./config";
-import type { BoardCursor, BoardItem, ChatMessage, PeerInfo, Poll, ServerEvent, TranscriptSegment } from "./types";
+import type {
+  BoardCursor,
+  BoardItem,
+  ChatMessage,
+  MeetingSecurity,
+  PeerInfo,
+  Poll,
+  ServerEvent,
+  TranscriptSegment,
+} from "./types";
 
 /** The room-wide whiteboard share: who put the board up, if anyone. */
 export interface WhiteboardSession {
@@ -56,6 +65,13 @@ interface Options {
   onAdmitted: (by: string) => void;
   /** The same account opened this meeting somewhere else and took the seat. */
   onReplaced: () => void;
+  /**
+   * The server would not take a media change - the host has the Security menu
+   * closed against it. The browser has already turned the hardware on, so the
+   * page has to put it back; refusing on the wire alone would leave the tile
+   * saying one thing and the microphone doing another.
+   */
+  onStateRefused: (state: { isMuted?: boolean; isSharing?: boolean }) => void;
   selfParticipantId: number | null;
 }
 
@@ -94,6 +110,7 @@ export function useMeetingRoom({
   onRemoved,
   onAdmitted,
   onReplaced,
+  onStateRefused,
   selfParticipantId,
 }: Options) {
   const [connected, setConnected] = useState(false);
@@ -112,6 +129,14 @@ export function useMeetingRoom({
     byConnection: null,
     locked: false,
   });
+  const [security, setSecurity] = useState<MeetingSecurity>({
+    locked: false,
+    allowShare: true,
+    allowChat: true,
+    allowUnmute: true,
+  });
+  // Whoever the host has put on everyone's stage, if anyone.
+  const [spotlight, setSpotlight] = useState<string | null>(null);
   const [polls, setPolls] = useState<Poll[]>([]);
   const [waiting, setWaiting] = useState<WaitingKnock[]>([]);
 
@@ -134,7 +159,7 @@ export function useMeetingRoom({
   const pendingStreamsRef = useRef<Map<string, MediaStream>>(new Map());
 
   // Callbacks live in a ref so the socket effect never re-subscribes on rerender.
-  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId });
+  const handlersRef = useRef({ onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, onStateRefused, selfParticipantId });
   // Offering is defined after the connection factory that needs it.
   const offerRef = useRef<(connectionId: string) => Promise<void>>(async () => undefined);
 
@@ -143,7 +168,7 @@ export function useMeetingRoom({
   }, [localStream]);
 
   useEffect(() => {
-    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId };
+    handlersRef.current = { onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, onStateRefused, selfParticipantId };
   }, [onMeetingEnded, onRecordingChanged, onForceMute, onRemoved, onAdmitted, onReplaced, selfParticipantId]);
 
   const send = useCallback((payload: Record<string, unknown>) => {
@@ -353,6 +378,8 @@ export function useMeetingRoom({
             byConnection: message.whiteboardByConnection ?? null,
             locked: Boolean(message.whiteboardLocked),
           });
+          if (message.security) setSecurity(message.security);
+          setSpotlight(message.spotlight ?? null);
           setPolls(message.polls ?? []);
           setWaiting(message.waiting ?? []);
           // The peers who were already here offer to the newcomer, so there is
@@ -388,6 +415,8 @@ export function useMeetingRoom({
             delete next[message.connectionId];
             return next;
           });
+          // Nobody can be spotlit from outside the room.
+          setSpotlight((current) => (current === message.connectionId ? null : current));
           // Their pen went with them; leaving it on the board would strand a
           // name over a mark nobody is drawing.
           setBoardCursors((current) => {
@@ -466,6 +495,8 @@ export function useMeetingRoom({
               break;
             case "close":
               setWhiteboard({ open: false, by: null, byConnection: null, locked: false });
+      setSecurity({ locked: false, allowShare: true, allowChat: true, allowUnmute: true });
+      setSpotlight(null);
               // The server wipes the board when the share ends, so drop the
               // marks here too instead of flashing them on the next share.
               setBoardItems([]);
@@ -485,6 +516,21 @@ export function useMeetingRoom({
               }));
               break;
           }
+          break;
+        }
+        case "security": {
+          if (message.action === "spotlight") setSpotlight(message.connectionId);
+          else
+            setSecurity({
+              locked: message.locked,
+              allowShare: message.allowShare,
+              allowChat: message.allowChat,
+              allowUnmute: message.allowUnmute,
+            });
+          break;
+        }
+        case "state-refused": {
+          handlersRef.current.onStateRefused(message);
           break;
         }
         case "poll": {
@@ -628,6 +674,10 @@ export function useMeetingRoom({
       },
       openBoard: () => send({ type: "whiteboard", action: "open" }),
       closeBoard: () => send({ type: "whiteboard", action: "close" }),
+      setSecurity: (patch: Partial<MeetingSecurity>) =>
+        send({ type: "security", action: "set", ...patch }),
+      setSpotlight: (connectionId: string | null) =>
+        send({ type: "security", action: "spotlight", connectionId }),
       createPoll: (question: string, options: string[]) =>
         send({ type: "poll", action: "create", question, options }),
       votePoll: (pollId: string, choice: number) =>
@@ -650,6 +700,8 @@ export function useMeetingRoom({
     boardItems,
     boardCursors,
     whiteboard,
+    security,
+    spotlight,
     polls,
     waiting,
     ...api,

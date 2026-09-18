@@ -14,12 +14,15 @@ export function ChatPanel({
   selfUserId,
   onSend,
   onClose,
+  canChat = true,
 }: {
   messages: ChatMessage[];
   peers: PeerInfo[];
   selfUserId: number;
   onSend: (body: string, recipientId: number | null) => void;
   onClose: () => void;
+  /** False while the host has chat switched off in the Security menu. */
+  canChat?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [recipient, setRecipient] = useState<number | null>(null);
@@ -32,7 +35,7 @@ export function ChatPanel({
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const body = draft.trim();
-    if (!body) return;
+    if (!body || !canChat) return;
     onSend(body, recipient);
     setDraft("");
   }
@@ -74,6 +77,13 @@ export function ChatPanel({
       </div>
 
       <form onSubmit={submit} className="sticky bottom-0 border-t border-white/8 bg-ink-850 p-3">
+        {!canChat && (
+          // The server drops these anyway; saying so beats a message that
+          // silently never arrives.
+          <p className="mb-2 flex items-center gap-1.5 rounded-lg bg-white/5 px-2.5 py-2 text-[11px] text-ink-300">
+            <Icon name="lock" size={12} /> The host has turned chat off.
+          </p>
+        )}
         <div className="mb-2 flex items-center gap-2 text-[11px] text-ink-300">
           To:
           <select
@@ -102,12 +112,13 @@ export function ChatPanel({
                 submit(event);
               }
             }}
-            placeholder="Type a message…"
+            disabled={!canChat}
+            placeholder={canChat ? "Type a message…" : "Chat is off"}
             className="max-h-24 flex-1 resize-none rounded-lg border border-white/10 bg-ink-800 px-3 py-2 text-sm text-white outline-none placeholder:text-ink-300 focus:border-zoom-blue"
           />
           <button
             type="submit"
-            disabled={!draft.trim()}
+            disabled={!draft.trim() || !canChat}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-zoom-blue text-white transition hover:bg-zoom-blue-dark disabled:opacity-40"
             aria-label="Send message"
           >

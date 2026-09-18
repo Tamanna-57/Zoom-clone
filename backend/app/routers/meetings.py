@@ -233,6 +233,17 @@ async def join_meeting(
             Participant.meeting_id == meeting.id, Participant.user_id == current.id
         )
     )
+    # A locked meeting is shut to newcomers, the way Zoom's is. Anyone already
+    # in the room keeps their seat and can rejoin after a reload - locking is
+    # meant to stop gatecrashers, not to strand the people already inside.
+    room = hub.room(code)
+    if room is not None and room.locked and meeting.host_id != current.id:
+        already_in = participant is not None and participant.admission == AdmissionState.admitted
+        if not already_in:
+            raise HTTPException(
+                status.HTTP_423_LOCKED, "The host has locked this meeting"
+            )
+
     if participant is not None and participant.admission == AdmissionState.removed:
         # Zoom keeps an ejected attendee out for the rest of the meeting; a
         # removal that the person can undo by re-opening the link is not one.
