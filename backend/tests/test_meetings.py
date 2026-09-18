@@ -102,6 +102,121 @@ def test_wrong_passcode_cannot_join(client, host, guest):
     assert response.status_code == 403
 
 
+def test_a_guest_is_told_a_passcode_is_needed_without_being_told_what_it_is(
+    client, host, stranger
+):
+    """The gap that let a guest be refused at a door they were never shown.
+
+    The passcode is withheld from anyone who has not joined, so the browser
+    cannot read "passcode: null" as "no passcode" - it has to be told, or it
+    puts up no field and the join is refused with nothing the person can do.
+    """
+    host_token, _ = host
+    stranger_token, _ = stranger
+    meeting = make_meeting(client, host_token)
+
+    seen = client.get(f"/api/meetings/{meeting['code']}", headers=auth(stranger_token))
+
+    assert seen.json()["requires_passcode"] is True
+    assert seen.json()["passcode"] is None, "knowing a door is locked is not the key"
+
+
+def test_the_host_is_never_asked_for_their_own_passcode(client, host):
+    host_token, _ = host
+    meeting = make_meeting(client, host_token)
+
+    mine = client.get(f"/api/meetings/{meeting['code']}", headers=auth(host_token))
+
+    assert mine.json()["requires_passcode"] is False
+    assert mine.json()["passcode"] == meeting["passcode"]
+
+
+def test_a_meeting_without_a_passcode_asks_nobody_for_one(client, host, stranger):
+    host_token, _ = host
+    stranger_token, _ = stranger
+    meeting = make_meeting(client, host_token, passcode_required=False)
+
+    seen = client.get(f"/api/meetings/{meeting['code']}", headers=auth(stranger_token))
+
+    assert seen.json()["requires_passcode"] is False
+
+
+def test_the_host_can_take_the_passcode_off_and_a_guest_walks_in(client, host, guest):
+    host_token, _ = host
+    guest_token, _ = guest
+    meeting = make_meeting(client, host_token)
+
+    updated = client.patch(
+        f"/api/meetings/{meeting['code']}",
+        json={"passcode_required": False},
+        headers=auth(host_token),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["passcode"] is None
+
+    joined = client.post(
+        f"/api/meetings/{meeting['code']}/join", json={}, headers=auth(guest_token)
+    )
+    assert joined.status_code == 200, joined.text
+
+
+def test_the_host_can_put_a_passcode_back_on_and_it_is_enforced(client, host, guest):
+    host_token, _ = host
+    guest_token, _ = guest
+    meeting = make_meeting(client, host_token, passcode_required=False)
+
+    updated = client.patch(
+        f"/api/meetings/{meeting['code']}",
+        json={"passcode_required": True},
+        headers=auth(host_token),
+    )
+    fresh = updated.json()["passcode"]
+    assert fresh, "turning the passcode on should mint one"
+
+    refused = client.post(
+        f"/api/meetings/{meeting['code']}/join", json={}, headers=auth(guest_token)
+    )
+    assert refused.status_code == 403
+
+    allowed = client.post(
+        f"/api/meetings/{meeting['code']}/join",
+        json={"passcode": fresh},
+        headers=auth(guest_token),
+    )
+    assert allowed.status_code == 200, allowed.text
+
+
+def test_turning_the_passcode_on_twice_does_not_change_it(client, host):
+    """Otherwise a host toggling an unrelated setting invalidates the invitation."""
+    host_token, _ = host
+    meeting = make_meeting(client, host_token)
+
+    updated = client.patch(
+        f"/api/meetings/{meeting['code']}",
+        json={"passcode_required": True, "topic": "Renamed"},
+        headers=auth(host_token),
+    )
+
+    assert updated.json()["passcode"] == meeting["passcode"]
+    assert updated.json()["topic"] == "Renamed"
+
+
+def test_a_guest_cannot_take_the_passcode_off(client, host, guest):
+    host_token, _ = host
+    guest_token, _ = guest
+    meeting = make_meeting(client, host_token)
+
+    refused = client.patch(
+        f"/api/meetings/{meeting['code']}",
+        json={"passcode_required": False},
+        headers=auth(guest_token),
+    )
+
+    assert refused.status_code == 403
+    still = client.get(f"/api/meetings/{meeting['code']}", headers=auth(host_token))
+    assert still.json()["passcode"] == meeting["passcode"]
+
+
 # ------------------------------------------------------------------ waiting room
 def test_waiting_room_holds_a_guest_until_the_host_admits(client, host, guest):
     host_token, _ = host

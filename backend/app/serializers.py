@@ -87,6 +87,10 @@ def meeting_out(
         columns["passcode"] = None
     return schemas.MeetingOut(
         **columns,
+        # Mirrors the join endpoint's own rule exactly: a passcode is set, and
+        # this viewer is not the host, who is never asked for it.
+        requires_passcode=bool(meeting.passcode)
+        and (viewer is None or meeting.host_id != viewer.id),
         host=user_public(meeting.host),
         participants=[participant_out(p) for p in meeting.participants],
         invitees=[user_public(i.user) for i in meeting.invitees if i.user],

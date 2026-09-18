@@ -114,6 +114,9 @@ class MeetingCreate(BaseModel):
 
 class MeetingUpdate(BaseModel):
     topic: str | None = None
+    # Same switch the create call takes, rather than a second vocabulary for the
+    # same idea: turning it on mints a fresh code, turning it off removes one.
+    passcode_required: bool | None = None
     scheduled_start: IncomingDatetime | None = None
     duration_minutes: int | None = None
     agenda: str | None = None
@@ -147,6 +150,11 @@ class MeetingOut(ORMModel):
     # Only ever filled in for the host, a co-host, or someone already admitted.
     # Serving it to anyone who knows the meeting id would defeat the passcode.
     passcode: str | None
+    # Whether *this* viewer will be asked for a passcode when they join. Knowing
+    # that a door is locked gives nothing away; without it the browser cannot
+    # tell "no passcode" from "a passcode you are not allowed to read", and so
+    # never puts the field up - which leaves the guest refused with no recourse.
+    requires_passcode: bool = False
     status: MeetingStatus
     host: UserPublic
     scheduled_start: UtcDatetime | None

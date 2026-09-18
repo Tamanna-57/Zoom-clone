@@ -55,7 +55,9 @@ export default function MeetingPage() {
   const [loadError, setLoadError] = useState("");
   const [joinError, setJoinError] = useState("");
   const [joining, setJoining] = useState(false);
-  const [passcode, setPasscode] = useState("");
+  // null until the field is touched, so a deliberately cleared box stays cleared
+  // rather than springing back to the value below.
+  const [passcode, setPasscode] = useState<string | null>(null);
   const [endedBy, setEndedBy] = useState<string | null>(null);
 
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -77,6 +79,11 @@ export default function MeetingPage() {
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null);
 
   const isHost = Boolean(meeting && user && meeting.host.id === user.id);
+
+  // A co-host, or someone rejoining a meeting they were already admitted to, may
+  // read the passcode, so fill it in rather than make them go and find it again.
+  // Everyone else is served null here and types it from the invitation.
+  const passcodeValue = passcode ?? meeting?.passcode ?? "";
 
   // ---------------------------------------------------------------- bootstrap
   useEffect(() => {
@@ -306,7 +313,7 @@ export default function MeetingPage() {
     let cancelled = false;
     const check = async () => {
       try {
-        const response = await api.joinMeeting(code, { passcode: passcode || undefined });
+        const response = await api.joinMeeting(code, { passcode: passcodeValue || undefined });
         if (cancelled || !response.admitted) return;
         setJoinData(response);
         setMeeting(response.meeting);
@@ -329,7 +336,7 @@ export default function MeetingPage() {
       cancelled = true;
       window.clearInterval(poll);
     };
-  }, [phase, code, passcode, notify]);
+  }, [phase, code, passcodeValue, notify]);
 
   // Call timer.
   useEffect(() => {
@@ -350,7 +357,7 @@ export default function MeetingPage() {
     setJoining(true);
     setJoinError("");
     try {
-      const response = await api.joinMeeting(code, { passcode: passcode || undefined });
+      const response = await api.joinMeeting(code, { passcode: passcodeValue || undefined });
       setJoinData(response);
       setMeeting(response.meeting);
       if (!response.admitted) {
@@ -575,8 +582,8 @@ export default function MeetingPage() {
         mediaError={mediaError}
         micOn={micOn}
         cameraOn={cameraOn}
-        needsPasscode={Boolean(meeting?.passcode) && meeting?.host.id !== user?.id}
-        passcode={passcode}
+        needsPasscode={Boolean(meeting?.requires_passcode)}
+        passcode={passcodeValue}
         joining={joining}
         error={joinError}
         onToggleMic={() => {

@@ -117,6 +117,10 @@ export function Whiteboard({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [rect, setRect] = useState<BoardRect>({ left: 0, top: 0, width: 1, height: 1 });
+  // paint() runs from a resize callback as well as from React, and a resize has
+  // to repaint before its new size reaches state, so the rect lives in a ref too.
+  const rectRef = useRef(rect);
+  rectRef.current = rect;
 
   const [tool, setTool] = useState<Tool>("pen");
   const [color, setColor] = useState(BOARD_COLORS[0]);
@@ -218,6 +222,7 @@ export function Whiteboard({
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
+    const rect = rectRef.current;
     const ratio = window.devicePixelRatio || 1;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, canvas.width / ratio, canvas.height / ratio);
@@ -268,7 +273,7 @@ export function Whiteboard({
       );
       ctx.restore();
     }
-  }, [rect, selectedId]);
+  }, [selectedId]);
 
   const paintRef = useRef(paint);
   paintRef.current = paint;
@@ -302,8 +307,13 @@ export function Whiteboard({
         canvas.width = width;
         canvas.height = height;
       }
-      setRect(boardRect(box.width, box.height));
-      schedulePaint();
+      rectRef.current = boardRect(box.width, box.height);
+      setRect(rectRef.current);
+      // Assigning canvas.width wipes the canvas, so repaint now rather than on
+      // the next frame. Deferring leaves the board blank until then - a flicker
+      // when a tile joins and the stage reflows, and indefinitely in a
+      // background tab, where requestAnimationFrame does not run at all.
+      paintRef.current();
     };
     measure();
     const observer = new ResizeObserver(measure);

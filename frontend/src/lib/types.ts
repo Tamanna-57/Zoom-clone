@@ -62,6 +62,10 @@ export interface Meeting {
   code: string;
   topic: string;
   passcode: string | null;
+  /** Whether this viewer will be asked for a passcode on join. The passcode
+   *  itself is hidden from anyone not entitled to it, so "null" cannot be read
+   *  as "no passcode" — this is the only honest signal the browser gets. */
+  requires_passcode: boolean;
   status: MeetingStatus;
   host: User;
   scheduled_start: string | null;

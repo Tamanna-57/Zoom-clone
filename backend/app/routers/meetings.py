@@ -184,7 +184,16 @@ def update_meeting(
 ):
     meeting = _load(db, code)
     _require_host(meeting, current)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    # Not a column: `passcode_required` is the switch, `passcode` is the value.
+    # Turning it on mints a fresh code rather than reviving an old one; turning
+    # it off has to survive the `is not None` guard below, which False would not.
+    match changes.pop("passcode_required", None):
+        case True if not meeting.passcode:
+            meeting.passcode = new_passcode()
+        case False:
+            meeting.passcode = None
+    for field, value in changes.items():
         if value is not None:
             setattr(meeting, field, value)
     db.commit()
