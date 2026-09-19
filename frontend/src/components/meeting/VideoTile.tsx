@@ -61,6 +61,10 @@ export function VideoTile({
   mirror = true,
   className = "",
   spotlight = false,
+  isPinned = false,
+  isSpotlit = false,
+  onTogglePin,
+  onToggleSpotlight,
 }: {
   stream: MediaStream | null;
   /** Bumped as tracks land, so a stream that gained audio re-attaches. */
@@ -75,7 +79,14 @@ export function VideoTile({
   role: string;
   mirror?: boolean;
   className?: string;
+  /** Renders this tile as the stage (bigger avatar), not "is spotlit". */
   spotlight?: boolean;
+  /** Pinned by this viewer, for this viewer only. */
+  isPinned?: boolean;
+  /** Spotlit by the host, so everyone is looking at it. */
+  isSpotlit?: boolean;
+  onTogglePin?: () => void;
+  onToggleSpotlight?: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const speaking = useSpeaking(stream, isMuted);
@@ -149,6 +160,47 @@ export function VideoTile({
         </button>
       )}
 
+      {(onTogglePin || onToggleSpotlight) && (
+        <div className="absolute right-2 top-2 z-10 flex gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+          {onToggleSpotlight && (
+            <button
+              onClick={onToggleSpotlight}
+              title={isSpotlit ? "Remove spotlight" : "Spotlight for everyone"}
+              aria-label={isSpotlit ? "Remove spotlight" : "Spotlight for everyone"}
+              className={`grid h-7 w-7 place-items-center rounded-md backdrop-blur transition ${
+                isSpotlit ? "bg-amber-400 text-ink-900" : "bg-black/60 text-white hover:bg-black/80"
+              }`}
+            >
+              <Icon name="spotlight" size={14} />
+            </button>
+          )}
+          {onTogglePin && (
+            <button
+              onClick={onTogglePin}
+              title={isPinned ? "Unpin" : "Pin for me"}
+              aria-label={isPinned ? "Unpin" : "Pin for me"}
+              className={`grid h-7 w-7 place-items-center rounded-md backdrop-blur transition ${
+                isPinned ? "bg-zoom-blue text-white" : "bg-black/60 text-white hover:bg-black/80"
+              }`}
+            >
+              <Icon name="pin" size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Why this tile is on the stage, so it never looks arbitrary. */}
+      {(isSpotlit || isPinned) && (
+        <span
+          className={`absolute left-2 top-2 z-10 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+            isSpotlit ? "bg-amber-400 text-ink-900" : "bg-zoom-blue text-white"
+          } ${isHandRaised ? "translate-x-10" : ""}`}
+        >
+          <Icon name={isSpotlit ? "spotlight" : "pin"} size={11} />
+          {isSpotlit ? "Spotlight" : "Pinned"}
+        </span>
+      )}
+
       {isHandRaised && (
         <span className="absolute left-2 top-2 grid h-8 w-8 place-items-center rounded-lg bg-amber-400 text-ink-900">
           <Icon name="hand" size={16} />
@@ -156,7 +208,7 @@ export function VideoTile({
       )}
 
       {isSharing && (
-        <span className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-zoom-green px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
+        <span className="absolute right-2 top-11 flex items-center gap-1 rounded-md bg-zoom-green px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
           <Icon name="screen" size={12} /> Presenting
         </span>
       )}

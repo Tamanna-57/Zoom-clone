@@ -3,8 +3,43 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Icon, type IconName } from "@/components/ui/Icon";
+import type { MeetingSecurity } from "@/lib/types";
 
 const REACTIONS = ["👍", "👏", "❤️", "😂", "😮", "🎉", "🙌", "☕"];
+
+/** One switch in the Security menu, drawn as a checkbox row like Zoom's. */
+function SecurityToggle({
+  label,
+  hint,
+  on,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  on: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={() => onChange(!on)}
+      role="switch"
+      aria-checked={on}
+      className="flex w-full items-start gap-2 rounded-lg px-3 py-2 text-left transition hover:bg-white/10"
+    >
+      <span
+        className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition ${
+          on ? "border-zoom-blue bg-zoom-blue text-white" : "border-white/25"
+        }`}
+      >
+        {on && <Icon name="check" size={11} strokeWidth={3} />}
+      </span>
+      <span>
+        <span className="block">{label}</span>
+        {hint && <span className="block text-[11px] text-ink-300">{hint}</span>}
+      </span>
+    </button>
+  );
+}
 
 function ToolButton({
   icon,
@@ -81,6 +116,9 @@ export function MeetingToolbar({
   onOpenWhiteboard,
   onOpenPolls,
   isWhiteboardOpen,
+  security,
+  onSecurityChange,
+  canShare,
 }: {
   isMuted: boolean;
   isVideoOn: boolean;
@@ -107,10 +145,16 @@ export function MeetingToolbar({
   onOpenWhiteboard: () => void;
   onOpenPolls: () => void;
   isWhiteboardOpen: boolean;
+  /** Zoom's Security menu. Host only - the server enforces every switch. */
+  security: MeetingSecurity;
+  onSecurityChange: (patch: Partial<MeetingSecurity>) => void;
+  /** False while the host has screen sharing switched off for participants. */
+  canShare: boolean;
 }) {
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [securityOpen, setSecurityOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -121,6 +165,7 @@ export function MeetingToolbar({
         setMoreOpen(false);
         setLeaveOpen(false);
         setShareOpen(false);
+        setSecurityOpen(false);
       }
     };
     document.addEventListener("mousedown", close);
@@ -137,7 +182,51 @@ export function MeetingToolbar({
       <span className="mx-2 hidden h-8 w-px bg-white/10 sm:block" />
 
       <div className="hidden items-center gap-1 sm:flex">
+        {isHost && (
+          <div className="relative">
+            <ToolButton
+              icon="shield"
+              label="Security"
+              active={securityOpen}
+              onClick={() => setSecurityOpen((open) => !open)}
+            />
+            {securityOpen && (
+              <div className="animate-slide-in absolute bottom-16 left-1/2 w-64 -translate-x-1/2 rounded-xl border border-white/10 bg-ink-800 p-1.5 text-sm text-white shadow-2xl">
+                <p className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-ink-300">
+                  Lock the meeting
+                </p>
+                <SecurityToggle
+                  label="Lock meeting"
+                  hint="No one new can join"
+                  on={security.locked}
+                  onChange={(value) => onSecurityChange({ locked: value })}
+                />
+                <p className="px-3 pb-1 pt-3 text-[10px] font-bold uppercase tracking-wide text-ink-300">
+                  Allow participants to
+                </p>
+                <SecurityToggle
+                  label="Share their screen"
+                  on={security.allowShare}
+                  onChange={(value) => onSecurityChange({ allowShare: value })}
+                />
+                <SecurityToggle
+                  label="Chat"
+                  on={security.allowChat}
+                  onChange={(value) => onSecurityChange({ allowChat: value })}
+                />
+                <SecurityToggle
+                  label="Unmute themselves"
+                  on={security.allowUnmute}
+                  onChange={(value) => onSecurityChange({ allowUnmute: value })}
+                />
+              </div>
+            )}
+          </div>
+        )}
         <ToolButton icon="people" label="Participants" badge={participantCount} active={panel === "people"} onClick={() => onOpenPanel("people")} />
+        {/* Chat stays open even when the host has switched it off: you can
+            still read what was said, you just cannot add to it. Only the
+            composer is locked, which is where the notice belongs. */}
         <ToolButton icon="chat" label="Chat" badge={chatUnread} active={panel === "chat"} onClick={() => onOpenPanel("chat")} />
         {/* Zoom asks *what* you want to share: a screen or the whiteboard. The
             browser's own picker only covers the first, so the choice lives here. */}
@@ -146,6 +235,7 @@ export function MeetingToolbar({
             icon="screen"
             label={isSharing ? "Stop share" : "Share"}
             active={isSharing || shareOpen}
+            disabled={!isSharing && !canShare}
             onClick={() => (isSharing ? onToggleShare() : setShareOpen((open) => !open))}
           />
           {shareOpen && !isSharing && (

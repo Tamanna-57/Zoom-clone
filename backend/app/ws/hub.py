@@ -89,6 +89,26 @@ class Room:
     # host and cohosts may change the board. Everyone can still watch it.
     board_locked: bool = False
 
+    # Zoom's Security menu. The host holds these and the server enforces them,
+    # because a hidden button is not a control - anyone can send the message it
+    # would have sent. They live and die with the call, like the board.
+    locked: bool = False
+    allow_share: bool = True
+    allow_chat: bool = True
+    allow_unmute: bool = True
+    # Zoom's spotlight: the host puts one person on everybody's stage. Distinct
+    # from a pin, which each viewer sets for themselves and never leaves their
+    # own screen, so it is not room state at all.
+    spotlight: str | None = None
+
+    def security_payload(self) -> dict:
+        return {
+            "locked": self.locked,
+            "allowShare": self.allow_share,
+            "allowChat": self.allow_chat,
+            "allowUnmute": self.allow_unmute,
+        }
+
 
 class Hub:
     def __init__(self) -> None:
